@@ -34,7 +34,8 @@ export async function persistMessage(
   content: MessageContent
 ): Promise<void> {
   try {
-    await MessageRepository.update(messageId, {
+    // 带归属校验的更新（userId 上游已通过会话归属校验，这里作为纵深防御）
+    const updated = await MessageRepository.updateOwned(messageId, userId, {
       content: content.answerContent,
       thinking: content.thinkingContent || undefined,
       toolCalls: content.toolCallsData
@@ -44,6 +45,13 @@ export async function persistMessage(
         ? (JSON.parse(JSON.stringify(content.toolResultsData)) as object)
         : undefined,
     })
+
+    if (!updated) {
+      console.error(
+        `[MessagePersister] Message ${messageId} not found or not owned by user ${userId}`
+      )
+      return
+    }
 
     await ConversationRepository.touch(conversationId, userId)
   } catch (error) {

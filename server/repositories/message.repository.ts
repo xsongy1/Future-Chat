@@ -96,21 +96,31 @@ export const MessageRepository = {
   },
 
   /**
-   * 更新消息
+   * 更新消息（带归属校验）
+   *
+   * 仅当消息属于指定用户时才会更新，防止越权修改他人消息（IDOR）。
+   * 通过 message.conversation.userId 关联过滤，原子完成校验与更新，避免 TOCTOU。
+   *
+   * @returns 是否更新成功（消息不存在或不属于该用户时返回 false）
    */
-  async update(
+  async updateOwned(
     id: string,
+    userId: string,
     data: {
       content?: string
       thinking?: string
       toolCalls?: Prisma.InputJsonValue
       toolResults?: Prisma.InputJsonValue
     }
-  ) {
-    return prisma.message.update({
-      where: { id },
+  ): Promise<boolean> {
+    const result = await prisma.message.updateMany({
+      where: {
+        id,
+        conversation: { userId },
+      },
       data,
     })
+    return result.count > 0
   },
 
   /**

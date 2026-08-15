@@ -17,8 +17,9 @@ export async function PATCH(
   { params }: { params: Promise<{ messageId: string }> }
 ): Promise<NextResponse> {
   // 鉴权
+  let userId: string
   try {
-    await getCurrentUserId()
+    userId = await getCurrentUserId()
   } catch {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
@@ -34,9 +35,17 @@ export async function PATCH(
       )
     }
 
-    await MessageRepository.update(messageId, {
+    // 归属校验 + 更新：仅能更新属于自己的消息（防止 IDOR 越权）
+    const updated = await MessageRepository.updateOwned(messageId, userId, {
       content: body.content,
     })
+
+    if (!updated) {
+      return NextResponse.json(
+        { error: '消息不存在或无权操作' },
+        { status: 403 }
+      )
+    }
 
     return NextResponse.json({ success: true })
   } catch (error) {

@@ -12,8 +12,10 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ messageId: string }> }
 ) {
+  // 鉴权
+  let userId: string
   try {
-    await getCurrentUserId()
+    userId = await getCurrentUserId()
   } catch {
     return Response.json({ error: 'Unauthorized' }, { status: 401 })
   }
@@ -23,7 +25,8 @@ export async function POST(
   const { content, thinking, toolInvocations } = body
 
   try {
-    await MessageRepository.update(messageId, {
+    // 归属校验 + 更新：仅能更新属于自己的消息（防止 IDOR 越权）
+    const updated = await MessageRepository.updateOwned(messageId, userId, {
       content: content || '',
       thinking: thinking || undefined,
       toolCalls: toolInvocations?.length
@@ -47,6 +50,10 @@ export async function POST(
             }))
         : undefined,
     })
+
+    if (!updated) {
+      return Response.json({ error: 'Forbidden' }, { status: 403 })
+    }
 
     return Response.json({ success: true })
   } catch (error) {
