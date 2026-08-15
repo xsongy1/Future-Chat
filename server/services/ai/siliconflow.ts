@@ -4,7 +4,7 @@
  * 负责与 SiliconFlow API 的通信
  */
 
-import { getModelById } from '@/features/chat/constants/models'
+import { CHAT_MODELS, getModelById } from '@/features/chat/constants/models'
 
 const SILICONFLOW_API_URL = 'https://api.siliconflow.cn/v1/chat/completions'
 
@@ -38,6 +38,13 @@ export async function createChatCompletion(
   const { model, messages, enableThinking = false, thinkingBudget = 4096, tools, toolChoice, signal } = options
   
   const modelInfo = getModelById(model)
+
+  // 白名单校验：防止配置漂移导致请求打到未授权/已下线的模型
+  if (!modelInfo) {
+    throw new Error(
+      `Unsupported model "${model}". Allowed models: ${CHAT_MODELS.map(m => m.id).join(', ')}`
+    )
+  }
   
   // 构建请求体
   const requestBody: Record<string, unknown> = {

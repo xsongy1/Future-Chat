@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CHAT_MODELS, MODEL_CATEGORY_NAMES } from '@/features/chat/constants/models'
+import { CHAT_MODELS, getDefaultModel, MODEL_CATEGORY_NAMES } from '@/features/chat/constants/models'
 import { cn } from '@/lib/utils'
 
 interface ModelSelectorProps {
@@ -39,13 +39,13 @@ interface ModelSelectorProps {
  * 
  * @example
  * ```tsx
- * const [model, setModel] = useState('Qwen/Qwen2.5-7B-Instruct')
+ * const [model, setModel] = useState('Qwen/Qwen2.5-72B-Instruct')
  * 
  * <ModelSelector value={model} onChange={setModel} />
  * ```
  */
 export function ModelSelector({ value, onChange, className }: ModelSelectorProps) {
-  const currentModel = CHAT_MODELS.find(m => m.id === value) || CHAT_MODELS[4]
+  const currentModel = CHAT_MODELS.find(m => m.id === value) || getDefaultModel()
 
   // 按类别分组
   const modelsByCategory = {

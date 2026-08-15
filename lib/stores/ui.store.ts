@@ -14,6 +14,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { getDefaultModel } from '@/features/chat/constants/models'
 
 interface UIState {
   // ============ Sidebar状态 ============
@@ -50,7 +51,8 @@ export const useUIStore = create<UIState>()(
     (set) => ({
       // ============ 初始状态 ============
       sidebarCollapsed: false,
-      defaultModel: 'Qwen/Qwen2.5-7B-Instruct',
+      // 跟随聊天模型白名单的默认模型，避免与 features/chat/constants/models.ts 配置漂移
+      defaultModel: getDefaultModel().id,
       themePreference: 'system',
       
       // ============ Actions ============

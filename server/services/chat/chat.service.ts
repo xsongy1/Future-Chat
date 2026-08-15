@@ -13,6 +13,7 @@ import { prisma } from '@/server/db/client'
 import { ConversationRepository } from '@/server/repositories/conversation.repository'
 import { MessageRepository } from '@/server/repositories/message.repository'
 import { createChatCompletion } from '@/server/services/ai/siliconflow'
+import { getDefaultModel } from '@/features/chat/constants/models'
 import { buildContextMessages, appendAttachments } from './prompt.builder'
 import { createSSEStream, createSSEStreamWithTools } from './stream.handler'
 import { toolRegistry, ensureToolsReady } from '@/server/services/tools'
@@ -59,7 +60,8 @@ export async function handleChatRequest(
   const {
     content,
     conversationId,
-    model = 'zai-org/GLM-4.6',
+    // 默认模型跟随客户端白名单（features/chat/constants/models.ts 中 default: true 的模型），避免配置漂移
+    model = getDefaultModel().id,
     enableThinking = false,
     thinkingBudget = 4096,
     enableWebSearch = false,
