@@ -6,6 +6,7 @@
 
 import { MessageRepository } from '@/server/repositories/message.repository'
 import { ConversationRepository } from '@/server/repositories/conversation.repository'
+import { sanitizeToolCallSyntax } from '@/features/chat/utils/sanitize-tool-syntax'
 import type { ToolCall } from '@/server/services/tools'
 
 /** 工具结果数据 */
@@ -64,9 +65,11 @@ export function processImageResults(
   allToolResults: Array<{ toolCallId: string; name: string; result: Record<string, unknown> }>
 ): string {
   // 收集真实的图片 URL
+  // 注意：工具执行结果里图片 URL 的键是 `url`（见 executeImageGeneration 返回值），
+  // 某些历史数据/其他路径可能用 `imageUrl`，这里兼容两者
   const realImageUrls = new Set<string>()
   for (const resultData of allToolResults) {
-    const imageUrl = resultData.result?.imageUrl as string | undefined
+    const imageUrl = (resultData.result?.url ?? resultData.result?.imageUrl) as string | undefined
     if (resultData.name === 'generate_image' && imageUrl) {
       realImageUrls.add(imageUrl)
     }
@@ -101,12 +104,16 @@ export function processImageResults(
   // 清理多余的空行
   contentWithImages = contentWithImages.replace(/\n{3,}/g, '\n\n').trim()
 
-  // 追加真实的图片
+  // 兜底清理模型偶发的工具调用语法残片（如 `} </tool_call>`）
+  contentWithImages = sanitizeToolCallSyntax(contentWithImages).trim()
+
+  // 收集真实的图片块（图片放在文本之前展示）
+  const imageBlocks: string[] = []
   for (const resultData of allToolResults) {
-    const imageUrl = resultData.result?.imageUrl as string | undefined
+    const imageUrl = (resultData.result?.url ?? resultData.result?.imageUrl) as string | undefined
     const width = resultData.result?.width as number | undefined
     const height = resultData.result?.height as number | undefined
-    
+
     if (resultData.name === 'generate_image' && imageUrl) {
       const toolCall = allToolCalls.find(
         (tc) => tc.id === resultData.toolCallId
@@ -126,8 +133,13 @@ export function processImageResults(
         width: width || 512,
         height: height || 512,
       })
-      contentWithImages += `\n\`\`\`image\n${imageData}\n\`\`\`\n`
+      imageBlocks.push(`\`\`\`image\n${imageData}\n\`\`\``)
     }
+  }
+
+  // 先图后文：图片块在前，回答文本在后
+  if (imageBlocks.length > 0) {
+    contentWithImages = `${imageBlocks.join('\n\n')}\n\n${contentWithImages}`
   }
 
   return contentWithImages

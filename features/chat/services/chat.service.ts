@@ -10,6 +10,7 @@ import { useChatStore } from '@/features/chat/store/chat.store'
 import { ConversationAPI } from '@/features/chat/services/conversation-api'
 import { SSEParser } from '@/features/chat/utils/sse-parser'
 import { StreamBuffer } from '@/features/chat/utils/stream-buffer'
+import { sanitizeToolCallSyntax } from '@/features/chat/utils/sanitize-tool-syntax'
 import type { Message, FileAttachment } from '@/features/chat/types/chat'
 import {
   startTrace,
@@ -331,6 +332,14 @@ export const ChatService = {
     let currentPhase: 'thinking' | 'answer' | null = null
     let traceEnded = false
 
+    // ========== 轮次内容管理 ==========
+    // 带工具调用的那一轮，模型偶发输出的前置文本（如"图片已生成… } </tool_call>"）
+    // 会被后端丢弃（见 stream.handler.ts），这里同步丢弃，保证直播内容与持久化一致；
+    // 同时保证图片先于文字展示。
+    let roundContentStart = 0 // 当前轮起始时 content 的长度（图片等已确认内容保留）
+    let pendingTools = 0 // 本轮尚未结束的工具数
+    let suppressRoundContent = false // 工具轮内丢弃后续 answer 文本
+
     try {
       await SSEParser.parseStream(reader, {
         onData: (data) => {
@@ -359,6 +368,13 @@ export const ChatService = {
             }
             thinkingBuffer.append(data.content)
           } else if (data.type === 'answer' && data.content) {
+            // 工具调用轮内的前置文本：后端不持久化，这里也丢弃（避免乱码/重复）
+            if (suppressRoundContent) return
+
+            // 清理模型偶发的工具调用语法残片（如 `} </tool_call>`）
+            const cleanedContent = sanitizeToolCallSyntax(data.content)
+            if (!cleanedContent) return
+
             if (s.streamingPhase !== 'answer') {
               s.startStreaming(messageId, 'answer')
               s.transitionPhase(messageId, { type: 'START_ANSWERING' })
@@ -370,10 +386,24 @@ export const ChatService = {
               startPhase('answer')
               currentPhase = 'answer'
             }
-            answerBuffer.append(data.content)
+            answerBuffer.append(cleanedContent)
           } else if (data.type === 'tool_call') {
             // 工具调用开始
             const toolCallId = data.toolCallId || nanoid()
+
+            // 新一轮工具调用：丢弃本轮已流式显示的前置文本（与后端持久化一致）
+            if (pendingTools === 0) {
+              suppressRoundContent = true
+              answerBuffer.clear()
+              const msg = s.messages.find((m) => m.id === messageId)
+              const currentContent = msg?.content || ''
+              if (currentContent.length > roundContentStart) {
+                s.updateMessage(messageId, {
+                  content: currentContent.slice(0, roundContentStart),
+                })
+              }
+            }
+            pendingTools++
             
             // 状态机：转换到 tool_calling
             s.transitionPhase(messageId, {
@@ -416,6 +446,9 @@ export const ChatService = {
               s.updateToolProgress(messageId, data.toolCallId, data.progress, data.estimatedTime)
             }
           } else if (data.type === 'tool_result') {
+            // 本轮一个工具结束
+            pendingTools = Math.max(0, pendingTools - 1)
+
             // 是否被用户取消（后端通过 /api/chat/cancel-tool 中断执行）
             const cancelled = !!data.cancelled
 
@@ -487,6 +520,14 @@ export const ChatService = {
             s.updateMessage(messageId, {
               toolInvocations: updatedInvocations,
             })
+
+            // 本轮全部工具结束：恢复文本显示，并记录下一轮内容起点（保留已确认的图片等）
+            if (pendingTools === 0) {
+              suppressRoundContent = false
+              answerBuffer.forceFlush()
+              roundContentStart =
+                useChatStore.getState().messages.find((m) => m.id === messageId)?.content?.length ?? 0
+            }
           } else if (data.type === 'complete') {
             // 流结束前强制刷新 buffer
             thinkingBuffer.forceFlush()

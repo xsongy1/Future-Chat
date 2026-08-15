@@ -73,6 +73,18 @@ export class StreamBuffer {
   }
 
   /**
+   * 清空缓冲区（丢弃尚未 flush 的内容）
+   * 工具调用轮开始时调用，丢弃该轮已缓冲的前置文本（模型偶发的有误输出）
+   */
+  clear(): void {
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId)
+      this.rafId = null
+    }
+    this.buffer = ''
+  }
+
+  /**
    * 销毁实例
    * 清理资源，防止内存泄漏
    */
