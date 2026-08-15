@@ -103,8 +103,6 @@ model Conversation {
   shareToken   String?   @unique
   isShared     Boolean   @default(false)
   sharedAt     DateTime?
-  viewCount    Int       @default(0)
-  lastViewedAt DateTime?
   isPinned     Boolean   @default(false)
   pinnedAt     DateTime?
 

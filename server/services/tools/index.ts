@@ -33,7 +33,9 @@ async function initTools(): Promise<void> {
       console.warn('[Tools] SiliconFlow S3 不可达，generate_image disabled')
     }
   } else {
-    console.warn('[Tools] SILICONFLOW_API_KEY not configured, generate_image disabled')
+    console.warn(
+      '[Tools] SILICONFLOW_API_KEY not configured, generate_image disabled'
+    )
   }
 }
 
@@ -54,7 +56,6 @@ export { toolRegistry }
 export type {
   Tool,
   ToolCall,
-  ParsedToolCall,
   ToolCallResult,
   ToolMessage,
   OpenAIToolDefinition,

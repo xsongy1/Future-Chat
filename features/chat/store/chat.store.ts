@@ -10,7 +10,11 @@
  */
 
 import { create } from 'zustand'
-import type { Message, AbortReason, StreamingPhase } from '@/features/chat/types/chat'
+import type {
+  Message,
+  AbortReason,
+  StreamingPhase,
+} from '@/features/chat/types/chat'
 import { getDefaultModel, getModelById } from '@/shared/constants/models'
 import { StorageManager, STORAGE_KEYS } from '@/lib/utils/storage'
 
@@ -31,6 +35,10 @@ interface ChatState {
   streamingPhase: StreamingPhase
   abortReason: AbortReason | null
 
+  // 请求中断控制器（运行时状态，不持久化；随 store 生命周期管理，避免模块级单例）
+  streamAbortController: AbortController | null
+  loadAbortController: AbortController | null
+
   // 配置
   selectedModel: string
   enableThinking: boolean
@@ -48,7 +56,12 @@ interface ChatActions {
   removeMessagesFrom: (index: number) => Message[]
 
   // 工具调用状态（只写 messages[].toolInvocations，单一事实来源）
-  updateToolProgress: (messageId: string, toolCallId: string, progress: number, estimatedTime?: number) => void
+  updateToolProgress: (
+    messageId: string,
+    toolCallId: string,
+    progress: number,
+    estimatedTime?: number
+  ) => void
   cancelTool: (messageId: string, toolCallId: string) => void
 
   // 加载状态
@@ -62,6 +75,10 @@ interface ChatActions {
   // 流式状态
   startStreaming: (messageId: string, phase: StreamingPhase) => void
   stopStreaming: (reason?: AbortReason) => void
+
+  // 请求中断控制器
+  setStreamAbortController: (controller: AbortController | null) => void
+  setLoadAbortController: (controller: AbortController | null) => void
 
   // 配置
   setModel: (modelId: string) => void
@@ -90,6 +107,8 @@ const initialState: ChatState = {
   streamingMessageId: null,
   streamingPhase: null,
   abortReason: null,
+  streamAbortController: null,
+  loadAbortController: null,
   selectedModel: getInitialModel(),
   enableThinking: false,
   enableWebSearch: false,
@@ -101,26 +120,30 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
   // ===== 消息操作 =====
   setMessages: (messages) => set({ messages }),
 
-  addMessage: (message) => set((s) => {
-    if (s.messages.some(m => m.id === message.id)) return s
-    return { messages: [...s.messages, message] }
-  }),
+  addMessage: (message) =>
+    set((s) => {
+      if (s.messages.some((m) => m.id === message.id)) return s
+      return { messages: [...s.messages, message] }
+    }),
 
-  updateMessage: (id, updates) => set((s) => ({
-    messages: s.messages.map(m => m.id === id ? { ...m, ...updates } : m)
-  })),
+  updateMessage: (id, updates) =>
+    set((s) => ({
+      messages: s.messages.map((m) => (m.id === id ? { ...m, ...updates } : m)),
+    })),
 
-  appendThinking: (id, chunk) => set((s) => ({
-    messages: s.messages.map(m =>
-      m.id === id ? { ...m, thinking: (m.thinking || '') + chunk } : m
-    )
-  })),
+  appendThinking: (id, chunk) =>
+    set((s) => ({
+      messages: s.messages.map((m) =>
+        m.id === id ? { ...m, thinking: (m.thinking || '') + chunk } : m
+      ),
+    })),
 
-  appendContent: (id, chunk) => set((s) => ({
-    messages: s.messages.map(m =>
-      m.id === id ? { ...m, content: (m.content || '') + chunk } : m
-    )
-  })),
+  appendContent: (id, chunk) =>
+    set((s) => ({
+      messages: s.messages.map((m) =>
+        m.id === id ? { ...m, content: (m.content || '') + chunk } : m
+      ),
+    })),
 
   clearMessages: () => set({ messages: [] }),
 
@@ -134,67 +157,88 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
   // ===== 工具调用状态（单一事实来源：messages[].toolInvocations） =====
   // 只更新这一处，UI 渲染与阶段派生都从这里读取，不存在漏改另一份平行状态的问题。
 
-  updateToolProgress: (messageId, toolCallId, progress, estimatedTime) => set((s) => ({
-    messages: s.messages.map((msg) => {
-      if (msg.id !== messageId) return msg
-      return {
-        ...msg,
-        toolInvocations: msg.toolInvocations?.map((inv) =>
-          inv.toolCallId === toolCallId ? { ...inv, progress, estimatedTime } : inv
-        ),
-      }
-    }),
-  })),
+  updateToolProgress: (messageId, toolCallId, progress, estimatedTime) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => {
+        if (msg.id !== messageId) return msg
+        return {
+          ...msg,
+          toolInvocations: msg.toolInvocations?.map((inv) =>
+            inv.toolCallId === toolCallId
+              ? { ...inv, progress, estimatedTime }
+              : inv
+          ),
+        }
+      }),
+    })),
 
-  cancelTool: (messageId, toolCallId) => set((s) => ({
-    messages: s.messages.map((msg) => {
-      if (msg.id !== messageId) return msg
-      return {
-        ...msg,
-        toolInvocations: msg.toolInvocations?.map((inv) =>
-          inv.toolCallId === toolCallId
-            ? { ...inv, state: 'cancelled' as const, result: { success: false, cancelled: true } }
-            : inv
-        ),
-      }
-    }),
-  })),
+  cancelTool: (messageId, toolCallId) =>
+    set((s) => ({
+      messages: s.messages.map((msg) => {
+        if (msg.id !== messageId) return msg
+        return {
+          ...msg,
+          toolInvocations: msg.toolInvocations?.map((inv) =>
+            inv.toolCallId === toolCallId
+              ? {
+                  ...inv,
+                  state: 'cancelled' as const,
+                  result: { success: false, cancelled: true },
+                }
+              : inv
+          ),
+        }
+      }),
+    })),
 
   // ===== 加载状态 =====
-  setLoadingMessages: (loading, conversationId = null) => set({
-    isLoadingMessages: loading,
-    loadingConversationId: loading ? conversationId : null,
-  }),
+  setLoadingMessages: (loading, conversationId = null) =>
+    set({
+      isLoadingMessages: loading,
+      loadingConversationId: loading ? conversationId : null,
+    }),
 
   setSendingMessage: (sending) => set({ isSendingMessage: sending }),
 
   // ===== 消息缓存 =====
-  cacheMessages: (conversationId, messages) => set((s) => {
-    const newCache = new Map(s.messageCache)
-    newCache.set(conversationId, messages)
-    return { messageCache: newCache }
-  }),
+  cacheMessages: (conversationId, messages) =>
+    set((s) => {
+      const newCache = new Map(s.messageCache)
+      newCache.set(conversationId, messages)
+      return { messageCache: newCache }
+    }),
 
   getCachedMessages: (conversationId) => {
     return get().messageCache.get(conversationId)
   },
 
   // ===== 流式状态 =====
-  startStreaming: (messageId, phase) => set({
-    streamingMessageId: messageId,
-    streamingPhase: phase,
-    abortReason: null,
-  }),
+  startStreaming: (messageId, phase) =>
+    set({
+      streamingMessageId: messageId,
+      streamingPhase: phase,
+      abortReason: null,
+    }),
 
-  stopStreaming: (reason) => set({
-    streamingMessageId: null,
-    streamingPhase: null,
-    abortReason: reason || null,
-  }),
+  stopStreaming: (reason) =>
+    set({
+      streamingMessageId: null,
+      streamingPhase: null,
+      abortReason: reason || null,
+    }),
+
+  // ===== 请求中断控制器 =====
+  setStreamAbortController: (controller) =>
+    set({ streamAbortController: controller }),
+
+  setLoadAbortController: (controller) =>
+    set({ loadAbortController: controller }),
 
   // ===== 配置 =====
   setModel: (modelId) => {
-    try { StorageManager.set(STORAGE_KEYS.USER.SELECTED_MODEL, modelId) } catch {}
+    try {
+      StorageManager.set(STORAGE_KEYS.USER.SELECTED_MODEL, modelId)
+    } catch {}
     set({ selectedModel: modelId })
   },
 
@@ -208,4 +252,5 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
 
 // Selectors
 export const selectIsStreaming = (s: ChatState) => s.streamingMessageId !== null
-export const selectLastMessage = (s: ChatState) => s.messages[s.messages.length - 1]
+export const selectLastMessage = (s: ChatState) =>
+  s.messages[s.messages.length - 1]

@@ -16,11 +16,11 @@ import { ConversationAPI } from '@/features/chat/services/conversation-api'
 import { StreamHandler } from '@/features/chat/services/stream-handler'
 import { syncConversationTitle } from '@/features/chat/services/title-sync'
 import type { Message, FileAttachment } from '@/features/chat/types/chat'
-import { startTrace, endTrace, getCurrentTraceId } from '@/lib/monitor/trace-helper'
-
-// 用于取消请求
-let loadAbortController: AbortController | null = null
-let streamAbortController: AbortController | null = null
+import {
+  startTrace,
+  endTrace,
+  getCurrentTraceId,
+} from '@/lib/monitor/trace-helper'
 
 /**
  * 通知后端取消正在执行的工具（/api/chat/cancel-tool）
@@ -43,7 +43,10 @@ async function requestToolCancellation(
       return null
     }
 
-    return (await response.json().catch(() => null)) as { success: boolean; cancelled?: boolean } | null
+    return (await response.json().catch(() => null)) as {
+      success: boolean
+      cancelled?: boolean
+    } | null
   } catch (e) {
     console.error('[ChatService] cancelTool failed:', e)
     return null
@@ -58,18 +61,18 @@ export const ChatService = {
     // ========== 埋点：先结束 Trace ==========
     endTrace('abort', 'user_cancel')
 
-    if (streamAbortController) {
-      streamAbortController.abort()
-      streamAbortController = null
-    }
-
     const store = useChatStore.getState()
+    // 中断控制器由 chat store 管理，随 store 生命周期创建/清理
+    store.streamAbortController?.abort()
+    store.setStreamAbortController(null)
+
     const messageId = store.streamingMessageId
     if (!messageId) return
 
     // 取消所有正在运行的工具（单一事实来源：messages[].toolInvocations）
     const message = store.messages.find((m) => m.id === messageId)
-    const runningTools = message?.toolInvocations?.filter((t) => t.state === 'running') ?? []
+    const runningTools =
+      message?.toolInvocations?.filter((t) => t.state === 'running') ?? []
     for (const tool of runningTools) {
       store.cancelTool(messageId, tool.toolCallId)
       // 通知后端取消工具（fire-and-forget）
@@ -90,7 +93,9 @@ export const ChatService = {
           thinking: msg.thinking || '',
           toolInvocations: msg.toolInvocations || [],
         }),
-      }).catch((e) => console.error('[ChatService] Failed to save partial message:', e))
+      }).catch((e) =>
+        console.error('[ChatService] Failed to save partial message:', e)
+      )
     }
   },
 
@@ -98,7 +103,11 @@ export const ChatService = {
    * 取消指定工具的执行
    * @param abortStream - 是否同时中断整个流（默认 false）
    */
-  async cancelTool(messageId: string, toolCallId: string, abortStream = false): Promise<boolean> {
+  async cancelTool(
+    messageId: string,
+    toolCallId: string,
+    abortStream = false
+  ): Promise<boolean> {
     const data = await requestToolCancellation(toolCallId)
     if (!data) return false
 
@@ -136,8 +145,8 @@ export const ChatService = {
     }
 
     // 取消之前的请求
-    loadAbortController?.abort()
-    loadAbortController = new AbortController()
+    useChatStore.getState().loadAbortController?.abort()
+    useChatStore.getState().setLoadAbortController(new AbortController())
 
     // 检查是否有缓存
     const cached = store.getCachedMessages(conversationId)
@@ -167,7 +176,9 @@ export const ChatService = {
 
       // 404 时跳转到首页
       if ((e as { status?: number }).status === 404) {
-        console.warn('[ChatService] Conversation not found, redirecting to home')
+        console.warn(
+          '[ChatService] Conversation not found, redirecting to home'
+        )
         window.location.href = '/'
         return
       }
@@ -175,7 +186,7 @@ export const ChatService = {
       // 静默失败，保持缓存数据
       console.error('[ChatService] loadMessages failed:', e)
     } finally {
-      loadAbortController = null
+      useChatStore.getState().setLoadAbortController(null)
       store.setLoadingMessages(false)
     }
   },
@@ -190,14 +201,28 @@ export const ChatService = {
       createUserMessage?: boolean
       attachments?: FileAttachment[]
       enableImageGeneration?: boolean
-      imageConfig?: { prompt: string; negative_prompt?: string; image_size: string }
+      imageConfig?: {
+        prompt: string
+        negative_prompt?: string
+        image_size: string
+      }
       previousTraceId?: string
     } = {}
   ): Promise<void> {
-    const { createUserMessage = true, attachments, enableImageGeneration, imageConfig, previousTraceId } = options
+    const {
+      createUserMessage = true,
+      attachments,
+      enableImageGeneration,
+      imageConfig,
+      previousTraceId,
+    } = options
     const store = useChatStore.getState()
 
-    console.log('[ChatService] sendMessage called:', { content, conversationId, isSendingMessage: store.isSendingMessage })
+    console.log('[ChatService] sendMessage called:', {
+      content,
+      conversationId,
+      isSendingMessage: store.isSendingMessage,
+    })
 
     if (store.isSendingMessage) {
       console.log('[ChatService] Already sending, skipping')
@@ -232,11 +257,15 @@ export const ChatService = {
       displayState: 'waiting',
     })
 
-    console.log('[ChatService] Messages after add:', useChatStore.getState().messages.length)
+    console.log(
+      '[ChatService] Messages after add:',
+      useChatStore.getState().messages.length
+    )
 
     try {
-      // 创建 AbortController 用于中断
-      streamAbortController = new AbortController()
+      // 创建 AbortController 用于中断（存入 chat store，随 store 生命周期管理）
+      const streamController = new AbortController()
+      useChatStore.getState().setStreamAbortController(streamController)
 
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -254,7 +283,7 @@ export const ChatService = {
           aiMessageId,
           attachments,
         }),
-        signal: streamAbortController.signal,
+        signal: streamController.signal,
       })
 
       if (!response.ok) throw new Error(`API error: ${response.status}`)
@@ -275,12 +304,15 @@ export const ChatService = {
         return
       }
       console.error('[ChatService] sendMessage failed:', e)
-      store.updateMessage(aiMessageId, { hasError: true, displayState: 'error' })
+      store.updateMessage(aiMessageId, {
+        hasError: true,
+        displayState: 'error',
+      })
       store.stopStreaming()
       // ========== 埋点：错误结束 ==========
       endTrace('error', (e as Error).message)
     } finally {
-      streamAbortController = null
+      useChatStore.getState().setStreamAbortController(null)
       store.setSendingMessage(false)
       // 更新消息缓存
       const currentMessages = useChatStore.getState().messages
@@ -312,7 +344,9 @@ export const ChatService = {
     const idsToDelete = removed.map((m) => m.id)
 
     // 找到最后一条用户消息
-    const lastUserMsg = [...store.messages].reverse().find((m) => m.role === 'user')
+    const lastUserMsg = [...store.messages]
+      .reverse()
+      .find((m) => m.role === 'user')
     if (!lastUserMsg) return
 
     // 后台删除数据库记录
@@ -359,6 +393,8 @@ export const ChatService = {
     }
 
     // 发送新内容
-    await this.sendMessage(conversationId, newContent, { createUserMessage: true })
+    await this.sendMessage(conversationId, newContent, {
+      createUserMessage: true,
+    })
   },
 }
