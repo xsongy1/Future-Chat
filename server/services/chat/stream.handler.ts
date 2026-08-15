@@ -7,6 +7,7 @@ import { createChatCompletion } from '@/server/services/ai/siliconflow'
 import { toolRegistry, type ToolCall } from '@/server/services/tools'
 import { formatToolMessages } from '@/server/services/tools/handler'
 import { executeImageGeneration } from '@/server/services/tools/image-generation'
+import { registerRunningTool, unregisterRunningTool } from '@/server/services/tools/cancellation'
 import { SSEWriter } from './sse-writer'
 import { persistMessage, processImageResults } from './message-persister'
 
@@ -15,6 +16,8 @@ export interface StreamContext {
   conversationId: string
   userId: string
   sessionId: string
+  /** 客户端断开/取消信号（来自 route handler 的 request.signal） */
+  cancelSignal?: AbortSignal
 }
 
 type ChatMessage = { role: string; content: string | null; tool_calls?: ToolCall[] }
@@ -36,7 +39,7 @@ export function createSSEStreamWithTools(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   context: StreamContextWithTools
 ): ReadableStream {
-  const { messageId, conversationId, userId, sessionId, apiKey, model, contextMessages, enableThinking, thinkingBudget } = context
+  const { messageId, conversationId, userId, sessionId, apiKey, model, contextMessages, enableThinking, thinkingBudget, cancelSignal } = context
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
 
@@ -55,12 +58,18 @@ export function createSSEStreamWithTools(
         let round = 0
 
         while (round < MAX_TOOL_ROUNDS) {
+          // 客户端已断开/取消：停止继续消费上游流和调用 AI
+          if (cancelSignal?.aborted) {
+            console.log('[Stream] 用户已取消，终止工具循环')
+            break
+          }
+
           round++
           console.log(`[Stream] === 第 ${round} 轮 ===`)
 
           // 读取 AI 响应，同时启动工具执行
           const { thinkingContent: roundThinking, answerContent: roundAnswer, toolCalls: roundToolCalls, toolPromises } =
-            await processAIResponseWithParallelTools(currentReader, decoder, writer)
+            await processAIResponseWithParallelTools(currentReader, decoder, writer, cancelSignal)
 
           thinkingContent += roundThinking
           console.log(`[Stream] AI 返回: answer=${roundAnswer.length}字, tools=${roundToolCalls.length}个`)
@@ -84,7 +93,7 @@ export function createSSEStreamWithTools(
             allToolResults.push({
               toolCallId: result.toolCallId,
               name: result.name,
-              result: { success: result.success, ...parseJSON(result.content) },
+              result: { success: result.success, cancelled: result.cancelled, ...parseJSON(result.content) },
             })
           }
 
@@ -104,8 +113,16 @@ export function createSSEStreamWithTools(
             enableThinking,
             thinkingBudget,
             tools: toolRegistry.getToolDefinitions(),
+            signal: cancelSignal,
           })
           currentReader = nextReader
+        }
+
+        // 用户取消：不持久化、不发送 complete，直接静默关闭
+        if (cancelSignal?.aborted) {
+          console.log('[Stream] 用户取消，流结束')
+          writer.close()
+          return
         }
 
         // 处理图片结果
@@ -123,6 +140,11 @@ export function createSSEStreamWithTools(
         writer.close()
         console.log('[Stream] 完成')
       } catch (error) {
+        // 用户取消导致的 AbortError：静默结束（客户端已断开，前端自行保存了部分内容）
+        if (cancelSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          console.log('[Stream] 流被取消（AbortError）')
+          return
+        }
         console.error('[Stream] 错误:', error)
         writer.error(error)
       }
@@ -136,18 +158,19 @@ export function createSSEStreamWithTools(
 async function processAIResponseWithParallelTools(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   decoder: TextDecoder,
-  writer: SSEWriter
+  writer: SSEWriter,
+  cancelSignal?: AbortSignal
 ): Promise<{
   thinkingContent: string
   answerContent: string
   toolCalls: ToolCall[]
-  toolPromises: Promise<{ toolCallId: string; name: string; success: boolean; content: string }>[]
+  toolPromises: Promise<{ toolCallId: string; name: string; success: boolean; cancelled?: boolean; content: string }>[]
 }> {
   let buffer = ''
   let thinkingContent = ''
   let answerContent = ''
   const toolCallsChunks: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> = []
-  const toolPromises: Promise<{ toolCallId: string; name: string; success: boolean; content: string }>[] = []
+  const toolPromises: Promise<{ toolCallId: string; name: string; success: boolean; cancelled?: boolean; content: string }>[] = []
   const startedTools = new Set<string>()
 
   while (true) {
@@ -207,7 +230,7 @@ async function processAIResponseWithParallelTools(
                 }
                 writer.sendToolCall(toolCall)
                 console.log(`[Stream] 启动工具: ${chunk.function.name}, args: ${args}`)
-                toolPromises.push(startToolExecution(toolCall, writer))
+                toolPromises.push(startToolExecution(toolCall, writer, cancelSignal))
               }
             }
           }
@@ -230,7 +253,7 @@ async function processAIResponseWithParallelTools(
     if (!startedTools.has(tc.id)) {
       writer.sendToolCall(tc)
       console.log(`[Stream] 延迟启动工具: ${tc.function.name}, args: ${tc.function.arguments}`)
-      toolPromises.push(startToolExecution(tc, writer))
+      toolPromises.push(startToolExecution(tc, writer, cancelSignal))
     }
   }
 
@@ -238,34 +261,73 @@ async function processAIResponseWithParallelTools(
 }
 
 /**
- * 启动工具执行（异步，带进度回调）
+ * 启动工具执行（异步，带进度回调，支持取消）
  */
 async function startToolExecution(
   toolCall: ToolCall,
-  writer: SSEWriter
-): Promise<{ toolCallId: string; name: string; success: boolean; content: string }> {
+  writer: SSEWriter,
+  cancelSignal?: AbortSignal
+): Promise<{ toolCallId: string; name: string; success: boolean; cancelled?: boolean; content: string }> {
   const name = toolCall.function.name
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(toolCall.function.arguments)
   } catch { /* ignore */ }
 
+  // 注册到取消注册表，/api/chat/cancel-tool 可通过 toolCallId 取消本次执行
+  const signal = registerRunningTool(toolCall.id, name, cancelSignal)
+
   try {
     if (name === 'generate_image') {
       // 图片生成：带进度回调
       const result = await executeImageGeneration(args, (progress) => {
         writer.sendToolProgress(toolCall.id, progress)
-      })
+      }, signal)
+
+      // 工具在完成前被取消（实现未抛出 AbortError 的情况）
+      if (signal.aborted) {
+        return {
+          toolCallId: toolCall.id,
+          name,
+          success: false,
+          cancelled: true,
+          content: JSON.stringify({ error: '工具已取消', cancelled: true }),
+        }
+      }
       return { toolCallId: toolCall.id, name, success: true, content: JSON.stringify(result) }
     } else {
       // 其他工具：直接执行
-      const content = await toolRegistry.executeByName(name, args)
+      const content = await toolRegistry.executeByName(name, args, signal)
+
+      if (signal.aborted) {
+        return {
+          toolCallId: toolCall.id,
+          name,
+          success: false,
+          cancelled: true,
+          content: JSON.stringify({ error: '工具已取消', cancelled: true }),
+        }
+      }
       return { toolCallId: toolCall.id, name, success: true, content }
     }
   } catch (error) {
+    // 用户取消：不当作失败，标记为 cancelled
+    const isCancelled = signal.aborted || (error instanceof Error && error.name === 'AbortError')
+    if (isCancelled) {
+      console.log(`[Stream] 工具 ${name} 已取消: ${toolCall.id}`)
+      return {
+        toolCallId: toolCall.id,
+        name,
+        success: false,
+        cancelled: true,
+        content: JSON.stringify({ error: '工具已取消', cancelled: true }),
+      }
+    }
     const msg = error instanceof Error ? error.message : '未知错误'
     console.error(`[Stream] 工具 ${name} 失败:`, msg)
     return { toolCallId: toolCall.id, name, success: false, content: JSON.stringify({ error: msg }) }
+  } finally {
+    unregisterRunningTool(toolCall.id)
   }
 }
 
@@ -293,7 +355,7 @@ export function createSSEStream(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   context: StreamContext
 ): ReadableStream {
-  const { messageId, conversationId, userId, sessionId } = context
+  const { messageId, conversationId, userId, sessionId, cancelSignal } = context
   const decoder = new TextDecoder()
   const encoder = new TextEncoder()
 
@@ -337,6 +399,11 @@ export function createSSEStream(
           }
         }
       } catch (error) {
+        // 用户取消导致的 AbortError：静默结束（前端自行保存了部分内容）
+        if (cancelSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+          console.log('[Stream] 流被取消（AbortError）')
+          return
+        }
         writer.error(error)
       }
     },

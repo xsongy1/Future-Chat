@@ -22,7 +22,12 @@ export interface Tool {
   name: string
   description: string
   parameters: ToolParameterSchema
-  execute: (args: Record<string, unknown>) => Promise<string>
+  /**
+   * 执行工具
+   * @param args - 工具参数
+   * @param signal - 可选：取消信号，工具实现应监听它以支持中断（AbortError）
+   */
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>
 }
 
 /**
@@ -66,6 +71,8 @@ export interface ToolCallResult {
   name: string
   content: string
   success: boolean
+  /** 是否被用户取消 */
+  cancelled?: boolean
 }
 
 /**
@@ -84,7 +91,7 @@ export interface IToolRegistry {
   register(tool: Tool): void
   get(name: string): Tool | undefined
   getToolDefinitions(): OpenAIToolDefinition[]
-  executeByName(name: string, args: Record<string, unknown>): Promise<string>
+  executeByName(name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>
   has(name: string): boolean
   getAll(): Tool[]
 }

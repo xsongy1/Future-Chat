@@ -41,11 +41,17 @@ export interface ChatResponse {
 
 /**
  * 处理聊天请求
+ *
+ * @param userId - 用户 ID
+ * @param apiKey - API Key
+ * @param request - 聊天请求体
+ * @param signal - 可选：客户端连接取消信号（request.signal），用于中断上游 AI 请求和工具执行
  */
 export async function handleChatRequest(
   userId: string,
   apiKey: string,
-  request: ChatRequest
+  request: ChatRequest,
+  signal?: AbortSignal
 ): Promise<ChatResponse> {
   // 确保工具初始化完成
   await ensureToolsReady()
@@ -114,6 +120,7 @@ export async function handleChatRequest(
     enableThinking,
     thinkingBudget,
     tools,
+    signal,
   })
 
   // 7. 创建 SSE 流
@@ -132,12 +139,14 @@ export async function handleChatRequest(
         contextMessages: contextMessages as Array<{ role: string; content: string }>,
         enableThinking,
         thinkingBudget,
+        cancelSignal: signal,
       })
     : createSSEStream(reader, {
         messageId,
         conversationId: conversation.id,
         userId,
         sessionId,
+        cancelSignal: signal,
       })
 
   return {

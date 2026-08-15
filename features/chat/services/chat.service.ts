@@ -91,19 +91,28 @@ export const ChatService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ toolCallId }),
       })
-      const data = await response.json()
-      
-      if (data.success) {
+
+      // 非 2xx：记录日志，不把 UI 标记为已取消（避免"假取消"）
+      if (!response.ok) {
+        console.warn('[ChatService] cancelTool HTTP error:', response.status)
+        return false
+      }
+
+      const data = await response.json().catch(() => null)
+
+      // 仅在服务端确认"确实找到了正在执行的工具并触发取消"时才更新 UI 状态
+      // （cancelled=false 说明工具已结束，此时不应把已完成的结果覆盖为已取消）
+      if (data?.success && data.cancelled) {
         const store = useChatStore.getState()
         store.cancelTool(messageId, toolCallId)
-        
+
         // 如果需要中断整个流
         if (abortStream) {
           this.abortStream()
         }
       }
-      
-      return data.success
+
+      return !!data?.success
     } catch (e) {
       console.error('[ChatService] cancelTool failed:', e)
       return false
@@ -407,11 +416,15 @@ export const ChatService = {
               s.updateToolProgress(messageId, data.toolCallId, data.progress, data.estimatedTime)
             }
           } else if (data.type === 'tool_result') {
-            // 状态机：工具完成
+            // 是否被用户取消（后端通过 /api/chat/cancel-tool 中断执行）
+            const cancelled = !!data.cancelled
+
+            // 状态机：工具完成（或被取消）
             s.transitionPhase(messageId, {
               type: 'TOOL_COMPLETE',
               toolCallId: data.toolCallId || '',
               success: data.success ?? false,
+              cancelled,
               result: {
                 imageUrl: data.imageUrl,
                 resultCount: data.resultCount,
@@ -439,9 +452,14 @@ export const ChatService = {
               if (isMatch) {
                 return {
                   ...inv,
-                  state: data.success ? ('completed' as const) : ('failed' as const),
+                  state: cancelled
+                    ? ('cancelled' as const)
+                    : data.success
+                      ? ('completed' as const)
+                      : ('failed' as const),
                   result: {
                     success: data.success ?? false,
+                    cancelled,
                     imageUrl: data.imageUrl,
                     resultCount: data.resultCount,
                     sources: data.sources,

@@ -12,11 +12,12 @@ const SUPPORTED_SIZES = ['1024x1024', '512x1024', '768x512', '768x1024', '1024x5
 export type ProgressCallback = (progress: number) => void
 
 /**
- * 执行图片生成（带进度回调）
+ * 执行图片生成（带进度回调，支持取消）
  */
 export async function executeImageGeneration(
   args: Record<string, unknown>,
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  signal?: AbortSignal
 ): Promise<{ url: string; width: number; height: number }> {
   const prompt = args.prompt as string
   const negativePrompt = args.negative_prompt as string | undefined
@@ -29,20 +30,22 @@ export async function executeImageGeneration(
   console.log('[ImageGen] 开始生成:', prompt.substring(0, 50))
 
   // 阶段1: 调用 API (0-60%)
+  signal?.throwIfAborted()
   onProgress?.(10)
   const result = await generateImage({
     prompt: prompt.trim(),
     negative_prompt: negativePrompt,
     image_size: imageSize,
-  })
+  }, signal)
   console.log('[ImageGen] API 返回成功')
   onProgress?.(60)
 
   // 阶段2: 下载保存 (60-100%)
+  signal?.throwIfAborted()
   onProgress?.(70)
   console.log('[ImageGen] 开始下载:', result.url.substring(0, 80))
   try {
-    const stored = await downloadAndSave(result.url)
+    const stored = await downloadAndSave(result.url, signal)
     console.log('[ImageGen] 保存成功:', stored.localUrl)
     onProgress?.(100)
 
@@ -83,9 +86,9 @@ export function createImageGenerationTool(): Tool {
       },
       required: ['prompt'],
     },
-    execute: async (args) => {
+    execute: async (args, signal) => {
       try {
-        const result = await executeImageGeneration(args)
+        const result = await executeImageGeneration(args, undefined, signal)
         return JSON.stringify(result)
       } catch (error) {
         const msg = error instanceof Error ? error.message : '未知错误'

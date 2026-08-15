@@ -30,9 +30,18 @@ interface TavilyResponse {
 /**
  * 调用 Tavily API 进行搜索
  */
-async function searchTavily(query: string, apiKey: string): Promise<TavilyResponse> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT)
+async function searchTavily(
+  query: string,
+  apiKey: string,
+  signal?: AbortSignal
+): Promise<TavilyResponse> {
+  const timeoutController = new AbortController()
+  const timeoutId = setTimeout(() => timeoutController.abort(), SEARCH_TIMEOUT)
+
+  // 合并超时信号与外部取消信号
+  const fetchSignal = signal
+    ? AbortSignal.any([timeoutController.signal, signal])
+    : timeoutController.signal
 
   try {
     const response = await fetch(TAVILY_API_URL, {
@@ -47,7 +56,7 @@ async function searchTavily(query: string, apiKey: string): Promise<TavilyRespon
         include_answer: true,
         max_results: 6,
       }),
-      signal: controller.signal,
+      signal: fetchSignal,
     })
 
     if (!response.ok) {
@@ -130,7 +139,7 @@ export function createWebSearchTool(apiKey: string): Tool {
       },
       required: ['query'],
     },
-    execute: async (args: Record<string, unknown>): Promise<string> => {
+    execute: async (args: Record<string, unknown>, signal?: AbortSignal): Promise<string> => {
       const query = args.query as string
 
       if (!query || typeof query !== 'string') {
@@ -138,7 +147,7 @@ export function createWebSearchTool(apiKey: string): Tool {
       }
 
       try {
-        const response = await searchTavily(query, apiKey)
+        const response = await searchTavily(query, apiKey, signal)
         const sources = extractSearchSources(response)
         const content = formatSearchResults(response)
         
@@ -149,6 +158,11 @@ export function createWebSearchTool(apiKey: string): Tool {
           resultCount: response.results?.length || 0,
         })
       } catch (error) {
+        // 用户取消：标记为 cancelled，不当作失败
+        if (signal?.aborted) {
+          console.log('[WebSearch] Search cancelled by user')
+          return JSON.stringify({ error: 'cancelled', cancelled: true, sources: [] })
+        }
         if (error instanceof Error) {
           if (error.name === 'AbortError') {
             console.error('[WebSearch] Search timeout')

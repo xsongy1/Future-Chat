@@ -50,11 +50,13 @@ const API_ENDPOINT = 'https://api.siliconflow.cn/v1/images/generations'
  * 生成图片
  *
  * @param options - 生成选项
+ * @param signal - 可选：取消信号，用于中断 API 请求
  * @returns 生成结果，包含临时 URL 和种子
  * @throws Error 当 API Key 未配置或 API 调用失败时
  */
 export async function generateImage(
-  options: ImageGenerationOptions
+  options: ImageGenerationOptions,
+  signal?: AbortSignal
 ): Promise<ImageGenerationResult> {
   const apiKey = process.env.SILICONFLOW_API_KEY
 
@@ -91,6 +93,7 @@ export async function generateImage(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(requestBody),
+    signal,
   })
 
   if (!response.ok) {

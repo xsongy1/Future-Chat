@@ -38,12 +38,13 @@ export async function POST(req: Request) {
     return Response.json({ error: 'Message is required' }, { status: 400 })
   }
 
-  // 4. 调用 ChatService 处理
+  // 4. 调用 ChatService 处理（传入 request.signal：客户端断开时中断上游请求和工具执行）
   try {
     const { stream, sessionId, conversationId, conversationTitle } = await handleChatRequest(
       userId,
       apiKey,
-      body
+      body,
+      req.signal
     )
 
     // 5. 返回 SSE 流响应

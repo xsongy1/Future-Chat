@@ -20,6 +20,8 @@ export interface ChatCompletionOptions {
   thinkingBudget?: number
   tools?: unknown[]
   toolChoice?: 'auto' | 'required' | { type: 'function'; function: { name: string } }
+  /** 取消信号：客户端断开或用户取消时中断上游请求 */
+  signal?: AbortSignal
 }
 
 export interface SiliconFlowResponse {
@@ -33,7 +35,7 @@ export async function createChatCompletion(
   apiKey: string,
   options: ChatCompletionOptions
 ): Promise<SiliconFlowResponse> {
-  const { model, messages, enableThinking = false, thinkingBudget = 4096, tools, toolChoice } = options
+  const { model, messages, enableThinking = false, thinkingBudget = 4096, tools, toolChoice, signal } = options
   
   const modelInfo = getModelById(model)
   
@@ -70,6 +72,7 @@ export async function createChatCompletion(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(requestBody),
+    signal,
   })
 
   if (!response.ok) {

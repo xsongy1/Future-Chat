@@ -50,6 +50,16 @@ function WebSearchStatus({ invocation }: { invocation: ToolInvocation }) {
     )
   }
 
+  // 已取消
+  if (invocation.state === 'cancelled') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <XCircle className="h-3.5 w-3.5" />
+        <span>搜索已取消</span>
+      </div>
+    )
+  }
+
   // 完成 - 显示来源标签
   const hasSources = sources && sources.length > 0
   

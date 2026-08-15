@@ -57,7 +57,7 @@ export class SSEWriter {
     this._send({ type: 'tool_progress', toolCallId, progress, sessionId: this._sessionId })
   }
 
-  sendToolResult(result: { toolCallId: string; name: string; success: boolean; content: string }): void {
+  sendToolResult(result: { toolCallId: string; name: string; success: boolean; content: string; cancelled?: boolean }): void {
     let parsed: Record<string, unknown> = {}
     try { parsed = JSON.parse(result.content) } catch { /* ignore */ }
 
@@ -68,6 +68,8 @@ export class SSEWriter {
       success: result.success,
       sessionId: this._sessionId,
     }
+
+    if (result.cancelled) event.cancelled = true
 
     if (result.name === 'web_search') {
       event.resultCount = parsed.resultCount || 0

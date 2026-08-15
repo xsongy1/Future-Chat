@@ -83,7 +83,11 @@ export class ToolRegistry implements IToolRegistry {
   /**
    * 按名称执行工具
    */
-  async executeByName(name: string, args: Record<string, unknown>): Promise<string> {
+  async executeByName(
+    name: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<string> {
     const tool = this.get(name)
     
     if (!tool) {
@@ -91,7 +95,7 @@ export class ToolRegistry implements IToolRegistry {
     }
     
     try {
-      return await tool.execute(args)
+      return await tool.execute(args, signal)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       console.error(`[ToolRegistry] Error executing tool "${name}":`, message)

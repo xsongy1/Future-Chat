@@ -65,16 +65,23 @@ const MAX_RETRIES = 3
 const RETRY_DELAY = 1000 // 1秒
 
 /**
- * 带重试的 fetch
+ * 带重试的 fetch（支持取消信号）
  */
-async function fetchWithRetry(url: string, retries = MAX_RETRIES): Promise<Response> {
+async function fetchWithRetry(
+  url: string,
+  retries = MAX_RETRIES,
+  signal?: AbortSignal
+): Promise<Response> {
   for (let i = 0; i < retries; i++) {
+    if (signal?.aborted) signal.throwIfAborted()
+
     try {
-      const response = await fetch(url)
+      const response = await fetch(url, { signal })
       if (response.ok) return response
       // 非网络错误，不重试
       throw new Error(`HTTP ${response.status}`)
     } catch (error) {
+      if (signal?.aborted) signal.throwIfAborted()
       const isLast = i === retries - 1
       if (isLast) throw error
       console.warn(`[Storage] 下载失败，${RETRY_DELAY}ms 后重试 (${i + 1}/${retries})`)
@@ -88,18 +95,26 @@ async function fetchWithRetry(url: string, retries = MAX_RETRIES): Promise<Respo
  * 下载远程图片并保存到本地
  *
  * @param remoteUrl - 远程图片 URL
+ * @param signal - 可选：取消信号，用于中断下载
  * @returns 存储的图片信息
  * @throws Error 当下载或保存失败时（包含清晰的错误信息）
  */
-export async function downloadAndSave(remoteUrl: string): Promise<StoredImage> {
+export async function downloadAndSave(
+  remoteUrl: string,
+  signal?: AbortSignal
+): Promise<StoredImage> {
   // 确保目录存在
   await ensureStorageDir()
 
   // 下载图片（带重试）
   let response: Response
   try {
-    response = await fetchWithRetry(remoteUrl)
+    response = await fetchWithRetry(remoteUrl, MAX_RETRIES, signal)
   } catch (error) {
+    // 用户取消：原样抛出 AbortError，交给上层按"已取消"处理
+    if (signal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+      throw error
+    }
     // 返回清晰的错误信息，告诉 AI 是本次网络问题
     const msg = error instanceof Error ? error.message : '未知错误'
     throw new Error(`图片下载失败（网络问题，本次请求不可用，用户可稍后重试）: ${msg}`)
