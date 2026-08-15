@@ -1,28 +1,22 @@
 /**
- * Chat Service - 业务逻辑
+ * Chat Service - 业务编排
  *
- * 处理消息发送、加载、流式解析等
- * 不依赖 React，纯业务逻辑
+ * 只负责消息发送、加载、重试、取消等流程的编排。
+ * 以下职责已拆分到独立模块：
+ * - SSE 流消费/分发：StreamHandler（stream-handler.ts）
+ * - 埋点：StreamTelemetry（stream-telemetry.ts）
+ * - 工具轮内容管理：RoundContentTracker（round-content-tracker.ts）
+ * - 标题同步：syncConversationTitle（title-sync.ts）
+ * - 工具进度/状态写入：store（单一事实来源 messages[].toolInvocations）
  */
 
 import { nanoid } from 'nanoid'
 import { useChatStore } from '@/features/chat/store/chat.store'
 import { ConversationAPI } from '@/features/chat/services/conversation-api'
-import { SSEParser } from '@/features/chat/utils/sse-parser'
-import { StreamBuffer } from '@/features/chat/utils/stream-buffer'
-import { sanitizeToolCallSyntax } from '@/features/chat/utils/sanitize-tool-syntax'
+import { StreamHandler } from '@/features/chat/services/stream-handler'
+import { syncConversationTitle } from '@/features/chat/services/title-sync'
 import type { Message, FileAttachment } from '@/features/chat/types/chat'
-import {
-  startTrace,
-  endTrace,
-  getCurrentTraceId,
-  recordFirstChunk,
-  recordChunk,
-  startPhase,
-  endPhase,
-  startToolWithId,
-  endTool,
-} from '@/lib/monitor/trace-helper'
+import { startTrace, endTrace, getCurrentTraceId } from '@/lib/monitor/trace-helper'
 
 // 用于取消请求
 let loadAbortController: AbortController | null = null
@@ -40,44 +34,39 @@ export const ChatService = {
       streamAbortController.abort()
       streamAbortController = null
     }
-    
-    // 更新状态机：将当前流式消息的状态转为 idle
+
     const store = useChatStore.getState()
     const messageId = store.streamingMessageId
-    if (messageId) {
-      // 取消所有正在运行的工具
-      const messageState = store.messageStates.get(messageId)
-      if (messageState) {
-        for (const [toolCallId, tool] of messageState.activeTools) {
-          if (tool.state === 'running') {
-            store.cancelTool(messageId, toolCallId)
-            // 通知后端取消工具
-            fetch('/api/chat/cancel-tool', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ toolCallId }),
-            }).catch(() => {})
-          }
-        }
-      }
-      
-      // 状态机转到 idle
-      store.transitionPhase(messageId, { type: 'COMPLETE' })
-      store.updateMessage(messageId, { displayState: 'idle' })
-      
-      // 保存已接收的内容到数据库
-      const message = store.messages.find((m) => m.id === messageId)
-      if (message) {
-        fetch(`/api/message/${messageId}/save-partial`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            content: message.content || '',
-            thinking: message.thinking || '',
-            toolInvocations: message.toolInvocations || [],
-          }),
-        }).catch((e) => console.error('[ChatService] Failed to save partial message:', e))
-      }
+    if (!messageId) return
+
+    // 取消所有正在运行的工具（单一事实来源：messages[].toolInvocations）
+    const message = store.messages.find((m) => m.id === messageId)
+    const runningTools = message?.toolInvocations?.filter((t) => t.state === 'running') ?? []
+    for (const tool of runningTools) {
+      store.cancelTool(messageId, tool.toolCallId)
+      // 通知后端取消工具
+      fetch('/api/chat/cancel-tool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toolCallId: tool.toolCallId }),
+      }).catch(() => {})
+    }
+
+    // 消息回到 idle（阶段由 selectors 从消息数据派生）
+    store.updateMessage(messageId, { displayState: 'idle' })
+
+    // 保存已接收的内容到数据库
+    const msg = store.messages.find((m) => m.id === messageId)
+    if (msg) {
+      fetch(`/api/message/${messageId}/save-partial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: msg.content || '',
+          thinking: msg.thinking || '',
+          toolInvocations: msg.toolInvocations || [],
+        }),
+      }).catch((e) => console.error('[ChatService] Failed to save partial message:', e))
     }
   },
 
@@ -104,8 +93,7 @@ export const ChatService = {
       // 仅在服务端确认"确实找到了正在执行的工具并触发取消"时才更新 UI 状态
       // （cancelled=false 说明工具已结束，此时不应把已完成的结果覆盖为已取消）
       if (data?.success && data.cancelled) {
-        const store = useChatStore.getState()
-        store.cancelTool(messageId, toolCallId)
+        useChatStore.getState().cancelTool(messageId, toolCallId)
 
         // 如果需要中断整个流
         if (abortStream) {
@@ -168,14 +156,14 @@ export const ChatService = {
       store.setMessages(unique)
     } catch (e) {
       if ((e as Error).name === 'AbortError') return
-      
+
       // 404 时跳转到首页
       if ((e as { status?: number }).status === 404) {
         console.warn('[ChatService] Conversation not found, redirecting to home')
         window.location.href = '/'
         return
       }
-      
+
       // 静默失败，保持缓存数据
       console.error('[ChatService] loadMessages failed:', e)
     } finally {
@@ -235,7 +223,7 @@ export const ChatService = {
       thinking: '',
       displayState: 'waiting',
     })
-    
+
     console.log('[ChatService] Messages after add:', useChatStore.getState().messages.length)
 
     try {
@@ -264,26 +252,13 @@ export const ChatService = {
       if (!response.ok) throw new Error(`API error: ${response.status}`)
 
       // 读取响应头中的标题更新，立即同步到前端 store
-      const newTitle = response.headers.get('X-Conversation-Title')
-      if (newTitle) {
-        const decodedTitle = decodeURIComponent(newTitle)
-        // 动态导入避免循环依赖
-        const { useConversationStore } = await import('@/features/conversation/store/conversation-store')
-        // 直接更新本地 store（不调用 API，因为后端已经更新了）
-        useConversationStore.setState((state) => ({
-          conversations: state.conversations.map((c) =>
-            c.id === conversationId ? { ...c, title: decodedTitle } : c
-          ),
-          filteredConversations: state.filteredConversations.map((c) =>
-            c.id === conversationId ? { ...c, title: decodedTitle } : c
-          ),
-        }))
-      }
+      await syncConversationTitle(conversationId, response)
 
       const reader = response.body?.getReader()
       if (!reader) throw new Error('No reader')
 
-      await this.handleStream(reader, aiMessageId)
+      // 消费 SSE 流（解析/缓冲/状态写入/埋点都在 StreamHandler 内部分层处理）
+      await new StreamHandler(reader, aiMessageId).run()
     } catch (e) {
       // AbortError 是正常中断，不算错误
       if ((e as Error).name === 'AbortError') {
@@ -302,277 +277,6 @@ export const ChatService = {
       // 更新消息缓存
       const currentMessages = useChatStore.getState().messages
       useChatStore.getState().cacheMessages(conversationId, currentMessages)
-    }
-  },
-
-  /**
-   * 处理 SSE 流
-   * 使用 StreamBuffer 批量刷新，优化渲染性能
-   * 使用消息状态机管理阶段转换
-   */
-  async handleStream(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
-    messageId: string
-  ): Promise<void> {
-    // 初始化消息状态机
-    const store = useChatStore.getState()
-    store.initMessageState(messageId)
-
-    // 创建两个独立的 buffer：thinking 和 answer
-    const thinkingBuffer = new StreamBuffer({
-      onFlush: (content) => useChatStore.getState().appendThinking(messageId, content),
-    })
-
-    const answerBuffer = new StreamBuffer({
-      onFlush: (content) => useChatStore.getState().appendContent(messageId, content),
-    })
-
-    // ========== 埋点状态 ==========
-    let isFirstChunk = true
-    let currentPhase: 'thinking' | 'answer' | null = null
-    let traceEnded = false
-
-    // ========== 轮次内容管理 ==========
-    // 带工具调用的那一轮，模型偶发输出的前置文本（如"图片已生成… } </tool_call>"）
-    // 会被后端丢弃（见 stream.handler.ts），这里同步丢弃，保证直播内容与持久化一致；
-    // 同时保证图片先于文字展示。
-    let roundContentStart = 0 // 当前轮起始时 content 的长度（图片等已确认内容保留）
-    let pendingTools = 0 // 本轮尚未结束的工具数
-    let suppressRoundContent = false // 工具轮内丢弃后续 answer 文本
-
-    try {
-      await SSEParser.parseStream(reader, {
-        onData: (data) => {
-          const s = useChatStore.getState()
-
-          // ========== 埋点：首个 chunk ==========
-          if (isFirstChunk) {
-            recordFirstChunk()
-            isFirstChunk = false
-          }
-
-          // ========== 埋点：每个 chunk（stall 检测） ==========
-          recordChunk()
-
-          if (data.type === 'thinking' && data.content) {
-            if (s.streamingPhase !== 'thinking') {
-              s.startStreaming(messageId, 'thinking')
-              s.transitionPhase(messageId, { type: 'START_THINKING' })
-              s.updateMessage(messageId, { displayState: 'streaming' })
-              // ========== 埋点：阶段切换 ==========
-              if (currentPhase && currentPhase !== 'thinking') {
-                endPhase(currentPhase)
-              }
-              startPhase('thinking')
-              currentPhase = 'thinking'
-            }
-            thinkingBuffer.append(data.content)
-          } else if (data.type === 'answer' && data.content) {
-            // 工具调用轮内的前置文本：后端不持久化，这里也丢弃（避免乱码/重复）
-            if (suppressRoundContent) return
-
-            // 清理模型偶发的工具调用语法残片（如 `} </tool_call>`）
-            const cleanedContent = sanitizeToolCallSyntax(data.content)
-            if (!cleanedContent) return
-
-            if (s.streamingPhase !== 'answer') {
-              s.startStreaming(messageId, 'answer')
-              s.transitionPhase(messageId, { type: 'START_ANSWERING' })
-              s.updateMessage(messageId, { displayState: 'streaming' })
-              // ========== 埋点：阶段切换 ==========
-              if (currentPhase && currentPhase !== 'answer') {
-                endPhase(currentPhase)
-              }
-              startPhase('answer')
-              currentPhase = 'answer'
-            }
-            answerBuffer.append(cleanedContent)
-          } else if (data.type === 'tool_call') {
-            // 工具调用开始
-            const toolCallId = data.toolCallId || nanoid()
-
-            // 新一轮工具调用：丢弃本轮已流式显示的前置文本（与后端持久化一致）
-            if (pendingTools === 0) {
-              suppressRoundContent = true
-              answerBuffer.clear()
-              const msg = s.messages.find((m) => m.id === messageId)
-              const currentContent = msg?.content || ''
-              if (currentContent.length > roundContentStart) {
-                s.updateMessage(messageId, {
-                  content: currentContent.slice(0, roundContentStart),
-                })
-              }
-            }
-            pendingTools++
-            
-            // 状态机：转换到 tool_calling
-            s.transitionPhase(messageId, {
-              type: 'START_TOOL_CALL',
-              toolCallId,
-              name: data.name || 'unknown',
-              args: { query: data.query, prompt: data.prompt },
-            })
-
-            // ========== 埋点：工具开始 ==========
-            startToolWithId(toolCallId, data.name || 'unknown', {
-              query: data.query,
-              prompt: data.prompt,
-            })
-            
-            const msg = s.messages.find((m) => m.id === messageId)
-            const invocations = msg?.toolInvocations || []
-            const newInvocation = {
-              toolCallId,
-              name: data.name || 'unknown',
-              state: 'running' as const,
-              args: {
-                query: data.query,
-                prompt: data.prompt,
-              },
-            }
-            s.updateMessage(messageId, {
-              toolInvocations: [...invocations, newInvocation],
-              displayState: 'streaming',
-            })
-          } else if (data.type === 'tool_progress') {
-            // 工具执行进度更新（不埋点，太频繁）
-            if (data.toolCallId && data.progress !== undefined) {
-              s.transitionPhase(messageId, {
-                type: 'TOOL_PROGRESS',
-                toolCallId: data.toolCallId,
-                progress: data.progress,
-                estimatedTime: data.estimatedTime,
-              })
-              s.updateToolProgress(messageId, data.toolCallId, data.progress, data.estimatedTime)
-            }
-          } else if (data.type === 'tool_result') {
-            // 本轮一个工具结束
-            pendingTools = Math.max(0, pendingTools - 1)
-
-            // 是否被用户取消（后端通过 /api/chat/cancel-tool 中断执行）
-            const cancelled = !!data.cancelled
-
-            // 状态机：工具完成（或被取消）
-            s.transitionPhase(messageId, {
-              type: 'TOOL_COMPLETE',
-              toolCallId: data.toolCallId || '',
-              success: data.success ?? false,
-              cancelled,
-              result: {
-                imageUrl: data.imageUrl,
-                resultCount: data.resultCount,
-                sources: data.sources,
-              },
-            })
-
-            // ========== 埋点：工具结束 ==========
-            endTool(data.name || 'unknown', {
-              toolCallId: data.toolCallId,
-              success: data.success ?? false,
-              imageUrl: data.imageUrl,
-              width: data.width,
-              height: data.height,
-              resultCount: data.resultCount,
-              sources: data.sources,
-            })
-
-            const msg = s.messages.find((m) => m.id === messageId)
-            const invocations = msg?.toolInvocations || []
-            const updatedInvocations = invocations.map((inv) => {
-              const isMatch = data.toolCallId
-                ? inv.toolCallId === data.toolCallId
-                : inv.name === data.name && inv.state === 'running'
-              if (isMatch) {
-                return {
-                  ...inv,
-                  state: cancelled
-                    ? ('cancelled' as const)
-                    : data.success
-                      ? ('completed' as const)
-                      : ('failed' as const),
-                  result: {
-                    success: data.success ?? false,
-                    cancelled,
-                    imageUrl: data.imageUrl,
-                    resultCount: data.resultCount,
-                    sources: data.sources,
-                    width: data.width,
-                    height: data.height,
-                  },
-                }
-              }
-              return inv
-            })
-
-            // 图片生成完成时，直接插入图片到 content 流
-            if (data.name === 'generate_image' && data.success && data.imageUrl) {
-              const imageData = JSON.stringify({
-                url: data.imageUrl,
-                alt:
-                  invocations.find((inv) => inv.toolCallId === data.toolCallId)?.args?.prompt ||
-                  '生成的图片',
-                width: data.width || 512,
-                height: data.height || 512,
-              })
-              answerBuffer.append(`\n\`\`\`image\n${imageData}\n\`\`\`\n`)
-            }
-
-            s.updateMessage(messageId, {
-              toolInvocations: updatedInvocations,
-            })
-
-            // 本轮全部工具结束：恢复文本显示，并记录下一轮内容起点（保留已确认的图片等）
-            if (pendingTools === 0) {
-              suppressRoundContent = false
-              answerBuffer.forceFlush()
-              roundContentStart =
-                useChatStore.getState().messages.find((m) => m.id === messageId)?.content?.length ?? 0
-            }
-          } else if (data.type === 'complete') {
-            // 流结束前强制刷新 buffer
-            thinkingBuffer.forceFlush()
-            answerBuffer.forceFlush()
-
-            // 状态机：完成
-            s.transitionPhase(messageId, { type: 'COMPLETE' })
-            s.stopStreaming()
-            s.updateMessage(messageId, { displayState: 'idle' })
-
-            // ========== 埋点：完成 ==========
-            if (currentPhase) endPhase(currentPhase)
-            endTrace('complete')
-            traceEnded = true
-          }
-        },
-        onError: (error) => {
-          console.error('[ChatService] stream error:', error)
-          thinkingBuffer.forceFlush()
-          answerBuffer.forceFlush()
-          const s = useChatStore.getState()
-          s.transitionPhase(messageId, { type: 'ERROR', message: error.message })
-          s.updateMessage(messageId, { hasError: true, displayState: 'error' })
-          s.stopStreaming()
-          // ========== 埋点：错误 ==========
-          if (currentPhase) endPhase(currentPhase)
-          endTrace('error', error.message)
-          traceEnded = true
-        },
-        onComplete: () => {
-          thinkingBuffer.forceFlush()
-          answerBuffer.forceFlush()
-          const s = useChatStore.getState()
-          s.stopStreaming()
-          s.updateMessage(messageId, { displayState: 'idle' })
-          // ========== 埋点：完成（如果还没结束） ==========
-          if (!traceEnded) {
-            if (currentPhase) endPhase(currentPhase)
-            endTrace('complete')
-          }
-        },
-      })
-    } finally {
-      thinkingBuffer.destroy()
-      answerBuffer.destroy()
     }
   },
 
@@ -613,7 +317,7 @@ export const ChatService = {
     }
 
     // ========== 埋点：传入 previousTraceId ==========
-    await this.sendMessage(conversationId, lastUserMsg.content, { 
+    await this.sendMessage(conversationId, lastUserMsg.content, {
       createUserMessage: false,
       previousTraceId,
     })

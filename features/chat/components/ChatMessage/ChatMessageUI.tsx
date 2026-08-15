@@ -117,8 +117,8 @@ function ToolInvocationItem({
   // 图片生成 - 显示进度条、取消按钮
   if (invocation.name === 'generate_image') {
     if (invocation.state === 'running' || invocation.state === 'pending') {
-      const progress = (invocation as { progress?: number }).progress ?? 0
-      const estimatedTime = (invocation as { estimatedTime?: number }).estimatedTime
+      const progress = invocation.progress ?? 0
+      const estimatedTime = invocation.estimatedTime
       
       return (
         <div className="space-y-2">

@@ -137,6 +137,10 @@ export interface ToolInvocation {
     prompt?: string
     [key: string]: unknown
   }
+  /** 执行进度（0-100，长时间运行的工具） */
+  progress?: number
+  /** 预估剩余时间（秒） */
+  estimatedTime?: number
   /** 执行结果 */
   result?: {
     success: boolean
