@@ -1,9 +1,9 @@
 /**
- * SSE 工具函数
+ * SSE 工具函数（前端与服务端共享）
  * 
- * 前后端通用的 SSE 解析工具
+ * 前后端通用的 SSE 解析工具，位于 shared/ 中立共享层。
  * 
- * @module lib/utils/sse
+ * @module shared/utils/sse
  */
 
 /**

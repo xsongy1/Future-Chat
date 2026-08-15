@@ -11,7 +11,11 @@
 import * as React from 'react'
 import { Search, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { useConversationStore } from '@/features/conversation/store/conversation-store'
+import { useShallow } from 'zustand/react/shallow'
+import {
+  useConversationStore,
+  selectFilteredConversations,
+} from '@/features/conversation/store/conversation-store'
 
 /**
  * 会话搜索组件
@@ -21,7 +25,7 @@ import { useConversationStore } from '@/features/conversation/store/conversation
 export function ConversationSearch() {
   const searchQuery = useConversationStore((s) => s.searchQuery)
   const setSearchQuery = useConversationStore((s) => s.setSearchQuery)
-  const filteredConversations = useConversationStore((s) => s.filteredConversations)
+  const filteredConversations = useConversationStore(useShallow(selectFilteredConversations))
   
   const handleClear = () => {
     setSearchQuery('')

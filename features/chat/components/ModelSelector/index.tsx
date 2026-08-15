@@ -22,7 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { CHAT_MODELS, getDefaultModel, MODEL_CATEGORY_NAMES } from '@/features/chat/constants/models'
+import { CHAT_MODELS, getDefaultModel, MODEL_CATEGORY_NAMES } from '@/shared/constants/models'
 import { cn } from '@/lib/utils'
 
 interface ModelSelectorProps {

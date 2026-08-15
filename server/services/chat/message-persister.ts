@@ -6,7 +6,7 @@
 
 import { MessageRepository } from '@/server/repositories/message.repository'
 import { ConversationRepository } from '@/server/repositories/conversation.repository'
-import { sanitizeToolCallSyntax } from '@/features/chat/utils/sanitize-tool-syntax'
+import { sanitizeToolCallSyntax } from '@/shared/utils/sanitize-tool-syntax'
 import type { ToolCall } from '@/server/services/tools'
 
 /** 工具结果数据 */

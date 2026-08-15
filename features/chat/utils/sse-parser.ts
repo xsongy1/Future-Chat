@@ -8,7 +8,7 @@
  */
 
 import type { SSEData } from '@/features/chat/types/chat'
-import { parseSSELine, splitSSEBuffer } from '@/lib/utils/sse'
+import { parseSSELine, splitSSEBuffer } from '@/shared/utils/sse'
 
 export interface SSECallbacks {
   onData: (data: SSEData) => void

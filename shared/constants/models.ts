@@ -1,5 +1,9 @@
 /**
- * 硅基流动聊天模型配置
+ * 硅基流动聊天模型配置（前端与服务端共享）
+ *
+ * 位于 shared/ 中立共享层：前端（模型选择器/聊天 store/UI store）与服务端
+ * （模型白名单校验、默认模型、思考参数）共同引用，避免配置漂移。
+ * lib/ 保持纯前端，不承载跨端代码。
  *
  * @see https://docs.siliconflow.cn/api-reference/chat-completions/chat-completions
  */

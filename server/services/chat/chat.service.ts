@@ -9,11 +9,12 @@
  * - 返回流式响应
  */
 
+import { nanoid } from 'nanoid'
 import { prisma } from '@/server/db/client'
 import { ConversationRepository } from '@/server/repositories/conversation.repository'
 import { MessageRepository } from '@/server/repositories/message.repository'
 import { createChatCompletion } from '@/server/services/ai/siliconflow'
-import { getDefaultModel } from '@/features/chat/constants/models'
+import { getDefaultModel } from '@/shared/constants/models'
 import { buildContextMessages, appendAttachments } from './prompt.builder'
 import { createSSEStream, createSSEStreamWithTools } from './stream.handler'
 import { toolRegistry, ensureToolsReady } from '@/server/services/tools'
@@ -60,7 +61,7 @@ export async function handleChatRequest(
   const {
     content,
     conversationId,
-    // 默认模型跟随客户端白名单（features/chat/constants/models.ts 中 default: true 的模型），避免配置漂移
+    // 默认模型跟随共享白名单（shared/constants/models.ts 中 default: true 的模型），避免配置漂移
     model = getDefaultModel().id,
     enableThinking = false,
     thinkingBudget = 4096,
@@ -74,8 +75,8 @@ export async function handleChatRequest(
   // 1. 获取或创建会话
   const conversation = await getOrCreateConversation(conversationId, userId)
 
-  // 2. 创建消息记录
-  const messageId = aiMessageId || generateMessageId()
+  // 2. 创建消息记录（ID 优先取客户端生成的 nanoid，兜底同样用 nanoid，避免两套 ID 格式）
+  const messageId = aiMessageId || nanoid()
   await createMessages(conversation.id, content, userMessageId, messageId, attachments)
 
   // 3. 更新会话标题（如果是第一条消息）
@@ -246,13 +247,6 @@ async function updateConversationTitle(
   }
 
   return conversation.title
-}
-
-/**
- * 生成消息 ID
- */
-function generateMessageId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
 }
 
 /**

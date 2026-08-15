@@ -12,7 +12,11 @@
 
 import { useEffect, useCallback } from 'react'
 import { useRouter, useParams } from 'next/navigation'
-import { useConversationStore } from '@/features/conversation/store/conversation-store'
+import { useShallow } from 'zustand/react/shallow'
+import {
+  useConversationStore,
+  selectFilteredConversations,
+} from '@/features/conversation/store/conversation-store'
 import { ConversationListUI } from './ConversationListUI'
 
 export function ConversationList() {
@@ -22,8 +26,8 @@ export function ConversationList() {
   // 从 URL 获取当前会话 ID
   const currentConversationId = params.conversationId as string | undefined
 
-  // 从store获取状态
-  const conversations = useConversationStore((s) => s.filteredConversations)
+  // 从store获取状态（搜索过滤后的列表由 selector 派生）
+  const conversations = useConversationStore(useShallow(selectFilteredConversations))
   const loading = useConversationStore((s) => s.conversationsLoading)
   const hasInitiallyLoaded = useConversationStore((s) => s.hasInitiallyLoaded)
 

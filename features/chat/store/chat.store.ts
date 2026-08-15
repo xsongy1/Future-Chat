@@ -11,7 +11,7 @@
 
 import { create } from 'zustand'
 import type { Message, AbortReason, StreamingPhase } from '@/features/chat/types/chat'
-import { getDefaultModel, getModelById } from '@/features/chat/constants/models'
+import { getDefaultModel, getModelById } from '@/shared/constants/models'
 import { StorageManager, STORAGE_KEYS } from '@/lib/utils/storage'
 
 interface ChatState {

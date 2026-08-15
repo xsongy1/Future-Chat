@@ -129,10 +129,14 @@ features/              # 功能模块
 ├── share/            # 分享
 └── voice/            # 语音
 
-lib/                   # 工具库
+lib/                   # 前端工具库（仅客户端，禁止 server 引用）
 ├── hooks/            # React Hooks
-├── services/         # API 服务
-└── utils/            # 工具函数
+├── stores/           # 全局状态
+└── utils/            # 前端工具函数
+
+shared/                # 中立共享层（前端与 server 均可引用）
+├── constants/        # 共享常量/配置（如模型白名单 models.ts）
+└── utils/            # 跨端纯函数（如 SSE 解析）
 
 server/                # 服务端代码
 ├── auth/             # Auth.js 配置
@@ -142,6 +146,17 @@ server/                # 服务端代码
 prisma/                # Prisma 配置
 └── schema.prisma     # 数据库模型
 ```
+
+## 分层规则
+
+依赖方向（禁止反向依赖）：
+
+- `features/ → lib/`：功能模块可依赖前端工具库
+- `features/ → shared/`：功能模块可依赖共享层
+- `server/ → shared/`：服务端可依赖共享层（仅限 `constants/`、`utils/` 等纯配置与纯函数）
+- `app/api/ → server/ → shared/`
+- 禁止 `server/` 依赖 `lib/` 与 `features/`（lib 含 React hooks/组件/store，features 属客户端层）
+- 禁止 `features/` 依赖 `server/`
 
 ## License
 

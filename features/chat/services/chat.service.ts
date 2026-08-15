@@ -22,6 +22,34 @@ import { startTrace, endTrace, getCurrentTraceId } from '@/lib/monitor/trace-hel
 let loadAbortController: AbortController | null = null
 let streamAbortController: AbortController | null = null
 
+/**
+ * 通知后端取消正在执行的工具（/api/chat/cancel-tool）
+ *
+ * @returns 解析后的响应体（{ success, cancelled }）；请求失败返回 null
+ */
+async function requestToolCancellation(
+  toolCallId: string
+): Promise<{ success: boolean; cancelled?: boolean } | null> {
+  try {
+    const response = await fetch('/api/chat/cancel-tool', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toolCallId }),
+    })
+
+    // 非 2xx：记录日志，不把 UI 标记为已取消（避免"假取消"）
+    if (!response.ok) {
+      console.warn('[ChatService] cancelTool HTTP error:', response.status)
+      return null
+    }
+
+    return (await response.json().catch(() => null)) as { success: boolean; cancelled?: boolean } | null
+  } catch (e) {
+    console.error('[ChatService] cancelTool failed:', e)
+    return null
+  }
+}
+
 export const ChatService = {
   /**
    * 中断当前流式请求
@@ -44,12 +72,8 @@ export const ChatService = {
     const runningTools = message?.toolInvocations?.filter((t) => t.state === 'running') ?? []
     for (const tool of runningTools) {
       store.cancelTool(messageId, tool.toolCallId)
-      // 通知后端取消工具
-      fetch('/api/chat/cancel-tool', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toolCallId: tool.toolCallId }),
-      }).catch(() => {})
+      // 通知后端取消工具（fire-and-forget）
+      requestToolCancellation(tool.toolCallId)
     }
 
     // 消息回到 idle（阶段由 selectors 从消息数据派生）
@@ -75,37 +99,21 @@ export const ChatService = {
    * @param abortStream - 是否同时中断整个流（默认 false）
    */
   async cancelTool(messageId: string, toolCallId: string, abortStream = false): Promise<boolean> {
-    try {
-      const response = await fetch('/api/chat/cancel-tool', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ toolCallId }),
-      })
+    const data = await requestToolCancellation(toolCallId)
+    if (!data) return false
 
-      // 非 2xx：记录日志，不把 UI 标记为已取消（避免"假取消"）
-      if (!response.ok) {
-        console.warn('[ChatService] cancelTool HTTP error:', response.status)
-        return false
+    // 仅在服务端确认"确实找到了正在执行的工具并触发取消"时才更新 UI 状态
+    // （cancelled=false 说明工具已结束，此时不应把已完成的结果覆盖为已取消）
+    if (data.success && data.cancelled) {
+      useChatStore.getState().cancelTool(messageId, toolCallId)
+
+      // 如果需要中断整个流
+      if (abortStream) {
+        this.abortStream()
       }
-
-      const data = await response.json().catch(() => null)
-
-      // 仅在服务端确认"确实找到了正在执行的工具并触发取消"时才更新 UI 状态
-      // （cancelled=false 说明工具已结束，此时不应把已完成的结果覆盖为已取消）
-      if (data?.success && data.cancelled) {
-        useChatStore.getState().cancelTool(messageId, toolCallId)
-
-        // 如果需要中断整个流
-        if (abortStream) {
-          this.abortStream()
-        }
-      }
-
-      return !!data?.success
-    } catch (e) {
-      console.error('[ChatService] cancelTool failed:', e)
-      return false
     }
+
+    return !!data.success
   },
 
   /**

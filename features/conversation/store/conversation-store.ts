@@ -1,7 +1,9 @@
 /**
  * Conversation Store - 会话列表管理
  *
- * 只负责会话列表的 CRUD 操作
+ * 只负责会话列表的 CRUD 操作与搜索词状态；
+ * filteredConversations 不再冗余存储，由 selectFilteredConversations 从
+ * conversations + searchQuery 派生，避免多处平行更新导致的状态漂移。
  * currentConversationId 由 URL 驱动，不在此 store 中维护
  */
 
@@ -20,10 +22,8 @@ import { sortConversations } from '@/features/conversation/utils/sort-conversati
 export type Conversation = ConversationData
 
 export interface ConversationState {
- 
-  // 会话列表
+  // 会话列表（始终按 sortConversations 排序）
   conversations: ConversationData[]
-  filteredConversations: ConversationData[]
   conversationsLoading: boolean
   hasInitiallyLoaded: boolean  // 首次加载完成标记
 
@@ -32,7 +32,6 @@ export interface ConversationState {
 
   // Actions
   loadConversations: () => Promise<void>
-  setFilteredConversations: (conversations: ConversationData[]) => void
   setSearchQuery: (query: string) => void
   addConversation: (conversation: ConversationData) => void
   createConversation: () => Promise<string>
@@ -44,10 +43,19 @@ export interface ConversationState {
 
 const initialState = {
   conversations: [],
-  filteredConversations: [],
   conversationsLoading: false,
   hasInitiallyLoaded: false,
   searchQuery: '',
+}
+
+/**
+ * 派生：按搜索词过滤后的会话列表
+ * 供组件通过 useConversationStore(useShallow(selectFilteredConversations)) 使用
+ */
+export function selectFilteredConversations(state: ConversationState): ConversationData[] {
+  const query = state.searchQuery.trim().toLowerCase()
+  if (!query) return state.conversations
+  return state.conversations.filter((conv) => conv.title.toLowerCase().includes(query))
 }
 
 export const useConversationStore = create<ConversationState>((set, get) => ({
@@ -61,7 +69,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
         const sortedConversations = sortConversations(result.data)
         set({
           conversations: sortedConversations,
-          filteredConversations: sortedConversations,
           conversationsLoading: false,
           hasInitiallyLoaded: true,
         })
@@ -75,32 +82,15 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     }
   },
 
-  setFilteredConversations: (conversations: ConversationData[]) =>
-    set({ filteredConversations: conversations }),
-
   setSearchQuery: (query) => {
     set({ searchQuery: query })
-
-    const { conversations } = get()
-    if (!query.trim()) {
-      set({ filteredConversations: conversations })
-      return
-    }
-
-    const filtered = conversations.filter((conv) =>
-      conv.title.toLowerCase().includes(query.toLowerCase())
-    )
-    set({ filteredConversations: filtered })
   },
 
   addConversation: (conversation: ConversationData) => {
     set((state) => {
       const updated = [conversation, ...state.conversations]
-      const sorted = sortConversations(updated)
-
       return {
-        conversations: sorted,
-        filteredConversations: sorted,
+        conversations: sortConversations(updated),
       }
     })
   },
@@ -120,10 +110,8 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
     // 添加到会话列表
     set((state) => {
       const updated = [conversation, ...state.conversations]
-      const sorted = sortConversations(updated)
       return {
-        conversations: sorted,
-        filteredConversations: sorted,
+        conversations: sortConversations(updated),
       }
     })
     
@@ -142,7 +130,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       
       set({
         conversations: updated,
-        filteredConversations: updated,
       })
     } catch (error) {
       console.error('Failed to delete conversation:', error)
@@ -159,9 +146,6 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       
       set((state) => ({
         conversations: state.conversations.map((c) =>
-          c.id === id ? { ...c, title } : c
-        ),
-        filteredConversations: state.filteredConversations.map((c) =>
           c.id === id ? { ...c, title } : c
         ),
       }))
@@ -182,15 +166,12 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       const conversation = result.data
 
       set((state) => {
-        const updateConversation = (c: ConversationData) =>
+        const updatedConversations = state.conversations.map((c) =>
           c.id === id ? { ...c, isPinned: conversation.isPinned, pinnedAt: conversation.pinnedAt } : c
-
-        const updatedConversations = state.conversations.map(updateConversation)
-        const updatedFiltered = state.filteredConversations.map(updateConversation)
+        )
 
         return {
           conversations: sortConversations(updatedConversations),
-          filteredConversations: sortConversations(updatedFiltered),
         }
       })
     } catch (error) {

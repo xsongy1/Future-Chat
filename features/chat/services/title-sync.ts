@@ -28,8 +28,5 @@ export async function syncConversationTitle(
     conversations: state.conversations.map((c) =>
       c.id === conversationId ? { ...c, title: decodedTitle } : c
     ),
-    filteredConversations: state.filteredConversations.map((c) =>
-      c.id === conversationId ? { ...c, title: decodedTitle } : c
-    ),
   }))
 }

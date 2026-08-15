@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { MarkdownIcon } from '@/components/icons/MarkdownIcon'
 import { TextFileIcon } from '@/components/icons/TextFileIcon'
-import { getModelById } from '@/features/chat/constants/models'
+import { getModelById } from '@/shared/constants/models'
 import { cn } from '@/lib/utils'
 import { ImageGenerationModal, type ImageConfig } from '../ImageGenerationModal'
 

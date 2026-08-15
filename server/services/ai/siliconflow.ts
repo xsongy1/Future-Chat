@@ -4,7 +4,7 @@
  * 负责与 SiliconFlow API 的通信
  */
 
-import { CHAT_MODELS, getModelById } from '@/features/chat/constants/models'
+import { CHAT_MODELS, getModelById } from '@/shared/constants/models'
 
 const SILICONFLOW_API_URL = 'https://api.siliconflow.cn/v1/chat/completions'
 
