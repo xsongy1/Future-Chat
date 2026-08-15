@@ -1,0 +1,64 @@
+# Sky Chat 开发环境 .dockerignore
+# 用于开发环境 Docker 构建（如果需要）
+
+# Dependencies
+node_modules
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Next.js
+.next
+out
+dist
+
+# Misc
+.DS_Store
+*.pem
+
+# Debug
+*.log
+
+# Local env files
+.env*
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+docs
+
+# Tests
+__tests__
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Generated images (runtime volume)
+public/generated
+
+# Cursor/Windsurf
+.cursor
+.windsurf
+.augment
+

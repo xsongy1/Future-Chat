@@ -1,0 +1,309 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  /* 隐藏滚动条但保持滚动功能 */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  :root {
+    /* ChatGPT 精确配色方案 */
+    --background: 0 0% 100%;              /* #FFFFFF - 主背景 */
+    --foreground: 0 0% 5%;                /* #0D0D0D - 主文字 */
+    
+    /* Sidebar 配色 */
+    --sidebar-bg: 0 0% 98.5%;             /* #FBFBFB - 侧边栏背景（更白） */
+    --sidebar-hover: 0 0% 95%;            /* #F2F2F2 - 侧边栏悬停 */
+    --sidebar-active: 0 0% 92%;           /* #EBEBEB - 侧边栏激活 */
+    
+    /* Input 配色 */
+    --input-bg: 0 0% 96%;                 /* #F4F4F4 - 输入框背景 */
+    --input-hover: 0 0% 94%;              /* #EFEFEF - 输入框悬停 */
+    --input-border: 0 0% 88%;             /* #E0E0E0 - 输入框边框（仅focus） */
+    
+    /* 消息配色 */
+    --message-user-bg: 0 0% 97.5%;        /* #F9F9F9 - 用户消息背景（更白） */
+    --message-ai-bg: 0 0% 100%;           /* #FFFFFF - AI消息背景（透明） */
+    
+    /* 文字配色 */
+    --text-primary: 0 0% 5%;              /* #0D0D0D - 主要文字 */
+    --text-secondary: 0 0% 40%;           /* #666666 - 次要文字 */
+    --text-tertiary: 0 0% 60%;            /* #999999 - 三级文字 */
+    
+    /* 按钮配色 */
+    --button-primary-bg: 0 0% 7%;         /* #121212 - 主按钮背景 */
+    --button-primary-hover: 0 0% 10%;     /* #1A1A1A - 主按钮悬停 */
+    --button-secondary-bg: 0 0% 96%;      /* #F4F4F4 - 次按钮背景 */
+    --button-secondary-hover: 0 0% 93%;   /* #ECECEC - 次按钮悬停 */
+    
+    /* 状态配色 */
+    --accent-thinking: 160 60% 45%;       /* #2D9D78 - 深青绿色（思考模式） */
+    --accent-thinking-bg: 160 45% 96%;    /* #F0F9F6 - 思考背景 */
+    --accent-thinking-border: 160 30% 85%; /* #D4E8E1 - 思考边框 */
+    --accent-green: 142 71% 45%;          /* #10B981 - 绿色（成功） */
+    --accent-red: 0 84% 60%;              /* #EF4444 - 红色（错误） */
+    
+    /* 其他 */
+    --border: 0 0% 93%;                   /* #ECECEC - 边框（少用） */
+    --ring: 217 91% 60%;                  /* #3B82F6 - 聚焦环 */
+    --radius: 0.75rem;                    /* 12px - 圆角 */
+    
+    /* 兼容旧变量 */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 5%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 5%;
+    --primary: 0 0% 7%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 5%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 0 0% 96%;
+    --accent-foreground: 0 0% 5%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --input: 0 0% 96%;
+  }
+  
+  .dark {
+    /* VSCode Dark+ 主题配色 */
+    --background: 0 0% 11.8%;             /* #1e1e1e - 编辑器背景 */
+    --foreground: 0 0% 83.1%;             /* #d4d4d4 - 主文字 */
+
+    /* Sidebar 配色 - VSCode 侧边栏 */
+    --sidebar-bg: 0 0% 14.5%;             /* #252526 - 侧边栏背景 */
+    --sidebar-hover: 0 0% 17.6%;          /* #2d2d30 - 侧边栏悬停 */
+    --sidebar-active: 0 0% 23.5%;         /* #3c3c3c - 侧边栏激活 */
+
+    /* Input 配色 - VSCode 输入框 */
+    --input-bg: 0 0% 23.5%;               /* #3c3c3c - 输入框背景 */
+    --input-hover: 0 0% 26.7%;            /* #444444 - 输入框悬停 */
+    --input-border: 0 0% 33.3%;           /* #555555 - 输入框边框 */
+
+    /* 消息配色 */
+    --message-user-bg: 0 0% 17.6%;        /* #2d2d30 - 用户消息背景 */
+    --message-ai-bg: 0 0% 11.8%;          /* #1e1e1e - AI消息背景 */
+
+    /* 文字配色 - VSCode 文字颜色 */
+    --text-primary: 0 0% 83.1%;           /* #d4d4d4 - 主要文字 */
+    --text-secondary: 0 0% 52.2%;         /* #858585 - 次要文字 */
+    --text-tertiary: 0 0% 40%;            /* #666666 - 三级文字 */
+
+    /* 按钮配色 */
+    --button-primary-bg: 207 100% 40%;    /* #007acc - VSCode 蓝色（状态栏） */
+    --button-primary-hover: 207 100% 35%; /* #0062a3 - 悬停加深 */
+    --button-secondary-bg: 0 0% 23.5%;    /* #3c3c3c - 次按钮背景 */
+    --button-secondary-hover: 0 0% 26.7%; /* #444444 - 次按钮悬停 */
+
+    /* 状态配色 - VSCode 语法高亮色 */
+    --accent-blue: 207 100% 40%;          /* #007acc - VSCode 蓝色 */
+    --accent-green: 89 61% 52%;           /* #89d185 - VSCode 绿色 */
+    --accent-red: 0 79% 63%;              /* #f48771 - VSCode 红色 */
+
+    /* 边框和其他 */
+    --border: 0 0% 20%;                   /* #333333 - 边框 */
+    --ring: 207 100% 40%;                 /* #007acc - 聚焦环 */
+    --radius: 0.375rem;                   /* 6px - VSCode 风格小圆角 */
+
+    /* 兼容旧变量 */
+    --card: 0 0% 14.5%;
+    --card-foreground: 0 0% 83.1%;
+    --popover: 0 0% 17.6%;
+    --popover-foreground: 0 0% 83.1%;
+    --primary: 207 100% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 23.5%;
+    --secondary-foreground: 0 0% 83.1%;
+    --muted: 0 0% 23.5%;
+    --muted-foreground: 0 0% 52.2%;
+    --accent: 207 100% 40%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 79% 63%;
+    --destructive-foreground: 0 0% 100%;
+    --input: 0 0% 23.5%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    font-feature-settings:
+      'rlig' 1,
+      'calt' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Courier New", monospace;
+  }
+}
+
+/* 消息淡入动画 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cursor-blink {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
+
+.animate-blink {
+  animation: cursor-blink 1s step-end infinite;
+}
+
+/* Prose 样式优化 */
+.prose-container {
+  @apply text-gray-900 dark:text-gray-100;
+}
+
+.prose-container .prose {
+  @apply text-[15px] leading-relaxed;
+  color: hsl(var(--text-primary));
+}
+
+.prose-container .prose p {
+  @apply my-2;
+}
+
+.prose-container .prose ul,
+.prose-container .prose ol {
+  @apply my-2;
+}
+
+.prose-container .prose li {
+  @apply my-1;
+}
+
+.prose-container .prose pre {
+  @apply my-3 rounded-lg px-0 py-0;
+  background: hsl(var(--background));
+  border: none;
+}
+
+.prose-container .prose pre code {
+  @apply text-sm;
+  color: hsl(var(--foreground));
+  font-weight: 400;
+  background: hsl(var(--background));
+}
+
+/* 确保prose中的pre不会被覆盖 */
+.prose pre {
+  @apply border-none rounded-none p-0 m-0;
+  background: hsl(var(--background));
+}
+
+.prose-container .prose :not(pre) > code {
+  @apply text-sm px-1.5 py-0.5 rounded;
+  background: hsl(var(--background));
+  color: #D63384;
+  border: none;
+}
+
+.prose-container .prose h1,
+.prose-container .prose h2,
+.prose-container .prose h3,
+.prose-container .prose h4,
+.prose-container .prose h5,
+.prose-container .prose h6 {
+  @apply font-semibold text-gray-900 dark:text-gray-100;
+}
+
+.prose-container .prose blockquote {
+  @apply border-l-4 border-gray-300 dark:border-gray-600 pl-4 italic;
+}
+
+.prose-container .prose a {
+  @apply text-blue-600 dark:text-blue-400 underline hover:text-blue-700 dark:hover:text-blue-300;
+}
+
+.prose-container .prose table {
+  @apply w-full border-collapse;
+}
+
+.prose-container .prose th,
+.prose-container .prose td {
+  @apply border border-gray-300 dark:border-gray-600 px-4 py-2;
+}
+
+.prose-container .prose th {
+  @apply bg-gray-100 dark:bg-gray-800 font-semibold;
+}
+
+/* 自定义滚动条样式类 - 用于需要美化滚动条的容器 */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.4);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* 悬停时才显示滚动条 */
+.custom-scrollbar-auto::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.custom-scrollbar-auto:hover::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 4px;
+}
+
+/* Firefox */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+
+.custom-scrollbar-auto {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.custom-scrollbar-auto:hover {
+  scrollbar-color: hsl(var(--border)) transparent;
+}

@@ -1,0 +1,144 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String         @id @default(cuid())
+  username      String?        @unique
+  password      String?
+  email         String?        @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  apiKey        String?
+  createdAt     DateTime       @default(now())
+  conversations Conversation[]
+  accounts      Account[]
+  sessions      Session[]
+  
+  @@index([email])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model PendingAccountLink {
+  id                String   @id @default(cuid())
+  email             String
+  provider          String
+  providerAccountId String
+  token             String   @unique
+  expires           DateTime
+  createdAt         DateTime @default(now())
+
+  @@unique([email, provider])
+  @@index([token])
+  @@index([expires])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  action     String
+  resourceId String?
+  metadata   Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([resourceId])
+}
+
+model Conversation {
+  id           String    @id @default(cuid())
+  title        String    @default("新对话")
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages     Message[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  shareToken   String?   @unique
+  isShared     Boolean   @default(false)
+  sharedAt     DateTime?
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+  isPinned     Boolean   @default(false)
+  pinnedAt     DateTime?
+
+  @@index([userId, updatedAt(sort: Desc)])
+  @@index([shareToken])
+  @@index([userId, isPinned, pinnedAt(sort: Desc)])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String       @db.Text
+  thinking       String?      @db.Text
+  toolCalls      Json?
+  toolResults    Json?        // 工具执行结果 [{ toolCallId, name, result }]
+  attachments    Json?        // 文件附件列表 [{ name, type, size }]
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+
+// 监控事件表 - 存储 SDK 上报的埋点数据
+model MonitorEvent {
+  id        String   @id @default(cuid())
+  type      String   // 事件类型: sse_start, sse_complete, tool_start 等
+  timestamp DateTime // 事件发生时间（客户端时间戳）
+  data      Json     // 事件数据: { traceId, ttfb, duration, ... }
+  context   Json     // 上下文: { appId, sessionId, traceId, ... }
+  createdAt DateTime @default(now())
+
+  @@index([type])
+  @@index([timestamp])
+  @@index([type, timestamp])
+}
