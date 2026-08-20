@@ -223,6 +223,43 @@ describe('TransportPlugin 重试与离线', () => {
     expect(transport.sendCalls).toHaveLength(0)
     expect(plugin.getQueueStatus().offline).toBe(1)
   })
+
+  it('离线期间退避调度不中断，恢复在线后自动补发（不依赖手动 flush）', async () => {
+    let online = true
+    const monitor = new Monitor({ appId: 'test-app' })
+    const transport = new MockTransport(0)
+    const storage = new MemoryStorage()
+    monitor.use(
+      new TransportPlugin({
+        endpoint: '/api/monitor',
+        transport,
+        flushInterval: 0,
+        offlineStorage: storage,
+        onlineCheck: () => online,
+      })
+    )
+    const plugin = monitor.getPlugin<TransportPlugin>('transport')!
+
+    // 在线发送失败 → 进入失败队列并调度退避（sendCalls=1 是那次失败的尝试）
+    transport.setShouldSucceed(false)
+    monitor.track('a', {})
+    await plugin.flush()
+    expect(plugin.getQueueStatus().offline).toBe(1)
+    expect(transport.sendCalls).toHaveLength(1)
+
+    // 进入离线：退避到期不应发送、不应丢批次、不应空转
+    online = false
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(transport.sendCalls).toHaveLength(1)
+    expect(plugin.getQueueStatus().offline).toBe(1)
+
+    // 恢复在线：自动补发成功，失败队列清空
+    online = true
+    transport.setShouldSucceed(true)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(transport.sendCalls).toHaveLength(2)
+    expect(plugin.getQueueStatus().offline).toBe(0)
+  })
 })
 
 describe('TransportPlugin 队列操作', () => {

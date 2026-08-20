@@ -86,6 +86,12 @@ export class StreamHandler {
       case 'tool_result':
         this.handleToolResult(data)
         break
+      case 'usage':
+        // ========== 埋点：Token 用量（成本/吞吐） ==========
+        if (data.usage) {
+          this.telemetry.onUsage(data.usage)
+        }
+        break
       case 'complete':
         this.finishStream()
         break

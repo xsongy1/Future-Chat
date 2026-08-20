@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { trackUserAction } from '@/lib/monitor/user-actions'
 
 interface CopyButtonProps {
   text: string
@@ -12,6 +13,9 @@ export function CopyButton({ text }: CopyButtonProps) {
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
+    // ========== 埋点：用户行为（复制代码块） ==========
+    trackUserAction('copy_code')
+
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)

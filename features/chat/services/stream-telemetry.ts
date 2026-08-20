@@ -18,6 +18,7 @@ import {
   endTrace,
   startToolWithId,
   endTool,
+  setTraceUsage,
 } from '@/lib/monitor/trace-helper'
 import type { SearchSource } from '@/features/chat/types/chat'
 
@@ -29,6 +30,13 @@ export interface ToolEndResult {
   height?: number
   resultCount?: number
   sources?: SearchSource[]
+}
+
+/** Token 用量（后端透传） */
+export interface StreamUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
 }
 
 export class StreamTelemetry {
@@ -71,6 +79,13 @@ export class StreamTelemetry {
    */
   onToolEnd(name: string, result: ToolEndResult): void {
     endTool(name, result)
+  }
+
+  /**
+   * Token 用量（后端透传 usage 事件）
+   */
+  onUsage(usage: StreamUsage): void {
+    setTraceUsage(usage)
   }
 
   /**

@@ -71,6 +71,7 @@ export class TransportPlugin implements Plugin {
   private timer: ReturnType<typeof setInterval> | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private flushing = false
+  private offlineFlushing = false
   private onlineHandler: (() => void) | null = null
 
   constructor(options: TransportPluginOptions) {
@@ -237,25 +238,46 @@ export class TransportPlugin implements Plugin {
 
   private async flushOffline(): Promise<void> {
     if (this.failed.length === 0) return
-    if (!this.options.onlineCheck()) return
 
-    const now = Date.now()
-    const due = this.failed.filter((f) => f.nextRetryAt <= now)
-    if (due.length === 0) return
-
-    this.failed = this.failed.filter((f) => f.nextRetryAt > now)
-
-    for (const batch of due) {
-      // 超过最大重试次数：在发送前直接放弃该批次
-      if (batch.retries >= this.options.maxRetries) {
-        continue
+    // 离线：不取出批次，改为至少 1s 后重试（避免 setTimeout(0) 空转循环）。
+    // 这样不依赖 online 事件也能在恢复后自动补发；在线时正常退避调度。
+    if (!this.options.onlineCheck()) {
+      if (!this.retryTimer) {
+        const earliest = Math.min(...this.failed.map((f) => f.nextRetryAt))
+        const delay = Math.max(1000, earliest - Date.now())
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null
+          void this.flushOffline()
+        }, delay)
       }
-      const ok = await this.transport.send(batch.events)
-      if (ok) continue
+      return
+    }
 
-      batch.retries += 1
-      batch.nextRetryAt = Date.now() + this.getBackoffDelay(batch.retries)
-      this.failed.push(batch)
+    // 并发保护：retryTimer 与 flush() 都可能触发本方法，
+    // 防止同一失败批次被两个执行流同时取出并重复上报
+    if (this.offlineFlushing) return
+    this.offlineFlushing = true
+    try {
+      const now = Date.now()
+      const due = this.failed.filter((f) => f.nextRetryAt <= now)
+      if (due.length === 0) return
+
+      this.failed = this.failed.filter((f) => f.nextRetryAt > now)
+
+      for (const batch of due) {
+        // 超过最大重试次数：在发送前直接放弃该批次
+        if (batch.retries >= this.options.maxRetries) {
+          continue
+        }
+        const ok = await this.transport.send(batch.events)
+        if (ok) continue
+
+        batch.retries += 1
+        batch.nextRetryAt = Date.now() + this.getBackoffDelay(batch.retries)
+        this.failed.push(batch)
+      }
+    } finally {
+      this.offlineFlushing = false
     }
     this.persistOffline()
     this.scheduleRetry()

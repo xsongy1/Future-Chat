@@ -93,6 +93,38 @@ function TraceDetail({ trace, compact = false }: { trace: TraceData; compact?: b
         )}
       </div>
 
+      {/* Token 用量与成本（sse_usage 事件） */}
+      {trace.usage && (
+        <div className="rounded-md bg-muted/50 p-2 space-y-1 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">Token 用量</span>
+            {trace.usage.tokensPerSec ? (
+              <span className="text-muted-foreground/70">{trace.usage.tokensPerSec} tok/s</span>
+            ) : null}
+          </div>
+          <div className="grid grid-cols-3 gap-1 text-center">
+            <div>
+              <div className="font-mono text-blue-500">{trace.usage.inputTokens ?? '-'}</div>
+              <div className="text-muted-foreground/60">输入</div>
+            </div>
+            <div>
+              <div className="font-mono text-green-500">{trace.usage.outputTokens ?? '-'}</div>
+              <div className="text-muted-foreground/60">输出</div>
+            </div>
+            <div>
+              <div className="font-mono text-foreground">{trace.usage.totalTokens ?? '-'}</div>
+              <div className="text-muted-foreground/60">合计</div>
+            </div>
+          </div>
+          {trace.usage.estimatedCost != null && (
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">估算成本</span>
+              <span className="font-mono text-amber-500">${trace.usage.estimatedCost.toFixed(6)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* 阶段时间线 */}
       {trace.phases.length > 0 && (
         <div className="space-y-1">

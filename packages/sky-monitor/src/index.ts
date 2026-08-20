@@ -13,16 +13,21 @@ export { Trace } from './core/trace'
 export { Session } from './core/session'
 export { BrowserStorage, BrowserTransport } from './core/storage'
 export { generateEventId, generateTraceId, generateSessionId, generateToolCallId } from './core/ids'
+export { estimateCost, getModelPrice, MODEL_PRICES } from './core/cost'
 
 // 类型
 export type {
+  ErrorCode,
   MonitorContext,
   MonitorEvent,
   MonitorOptions,
   Plugin,
+  TokenUsage,
   ToolResult,
+  TraceError,
   TraceOptions,
 } from './core/types'
+export type { CostEstimate, ModelPrice } from './core/cost'
 export type { TraceState, TraceEmitFn } from './core/trace'
 export type { SessionStats } from './core/session'
 export type { IStorage, ITransport, BrowserTransportOptions } from './core/storage'

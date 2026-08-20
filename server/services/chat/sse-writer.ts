@@ -90,6 +90,11 @@ export class SSEWriter {
     try { this._controller.enqueue(this._encoder.encode('data: [DONE]\n\n')) } catch { /* ignore */ }
   }
 
+  /** Token 用量透传（来自上游 AI 响应的 usage 字段，供前端监控成本/吞吐） */
+  sendUsage(usage: { inputTokens: number; outputTokens: number; totalTokens: number }): void {
+    this._send({ type: 'usage', usage, sessionId: this._sessionId })
+  }
+
   close(): void {
     if (this._closed) return
     this._closed = true

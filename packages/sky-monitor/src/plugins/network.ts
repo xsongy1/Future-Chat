@@ -91,6 +91,7 @@ export class NetworkPlugin implements Plugin {
     if (typeof XMLHttpRequest === 'undefined') return
 
     const monitor = this.monitor
+    const shouldCapture = (url: string) => this.shouldCapture(url)
     const originalOpen = XMLHttpRequest.prototype.open
     const originalSend = XMLHttpRequest.prototype.send
     this.xhrOpenOriginal = originalOpen
@@ -104,7 +105,11 @@ export class NetworkPlugin implements Plugin {
       username?: string | null,
       password?: string | null
     ) {
-      this.__skyMonitor = { method, url: String(url) }
+      // 与 fetch 拦截一致：open 时即应用 include/exclude 过滤
+      const urlString = String(url)
+      this.__skyMonitor = shouldCapture(urlString)
+        ? { method, url: urlString }
+        : undefined
       return originalOpen.call(this, method, url, async ?? true, username ?? null, password ?? null)
     }
 
@@ -147,11 +152,20 @@ export class NetworkPlugin implements Plugin {
 
   private shouldCapture(url: string): boolean {
     if (this.options.includeUrls.length > 0) {
-      if (!this.options.includeUrls.some((r) => r.test(url))) return false
+      if (!this.options.includeUrls.some((r) => testRegex(r, url))) return false
     }
-    if (this.options.excludeUrls.some((r) => r.test(url))) return false
+    if (this.options.excludeUrls.some((r) => testRegex(r, url))) return false
     return true
   }
+}
+
+/**
+ * 安全的正则测试：重置 lastIndex，避免带 g flag 的正则因
+ * lastIndex 状态残留导致间歇性匹配失败
+ */
+function testRegex(regex: RegExp, value: string): boolean {
+  regex.lastIndex = 0
+  return regex.test(value)
 }
 
 // 类型扩展：XHR 上的私有元数据

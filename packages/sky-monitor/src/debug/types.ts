@@ -39,6 +39,14 @@ export interface TraceData {
     chunkCount?: number
     duration?: number
   }
+  /** Token 用量与成本（sse_usage 事件） */
+  usage?: {
+    inputTokens?: number
+    outputTokens?: number
+    totalTokens?: number
+    estimatedCost?: number | null
+    tokensPerSec?: number
+  }
 }
 
 /** 阶段数据 */

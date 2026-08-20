@@ -28,7 +28,7 @@ export type MessageRole = 'user' | 'assistant' | 'system'
  * - tool_result: 工具调用结果
  * - complete: 流式传输完成
  */
-export type SSEEventType = 'thinking' | 'answer' | 'tool_calls' | 'tool_call' | 'tool_progress' | 'tool_result' | 'complete'
+export type SSEEventType = 'thinking' | 'answer' | 'tool_calls' | 'tool_call' | 'tool_progress' | 'tool_result' | 'usage' | 'complete'
 
 /**
  * 工具调用结构
@@ -276,6 +276,12 @@ export interface SSEData {
   estimatedTime?: number
   /** 是否被取消（tool_result 事件） */
   cancelled?: boolean
+  /** Token 用量（usage 事件，由后端透传上游 AI 响应的 usage 字段） */
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+  }
 }
 
 /**

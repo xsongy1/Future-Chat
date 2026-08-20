@@ -65,6 +65,35 @@ describe('DedupePlugin', () => {
     expect(collector.events).toHaveLength(2)
     vi.useRealTimers()
   })
+
+  it('非错误类事件不做指纹去重（管道热路径零开销）', () => {
+    const monitor = new Monitor({ appId: 'test-app' })
+    const collector = new CollectorPlugin()
+    monitor.use(new DedupePlugin({ windowMs: 5000 }))
+    monitor.use(collector)
+
+    // http_request / web_vital 等普通事件内容相同也不去重（id 天然唯一）
+    monitor.track('http_request', { url: '/api/chat', duration: 100 })
+    monitor.track('http_request', { url: '/api/chat', duration: 100 })
+    monitor.track('web_vital', { name: 'LCP', value: 2000 })
+
+    expect(collector.events).toHaveLength(3)
+  })
+
+  it('types 选项可自定义去重范围', () => {
+    const monitor = new Monitor({ appId: 'test-app' })
+    const collector = new CollectorPlugin()
+    monitor.use(new DedupePlugin({ windowMs: 5000, types: ['http_request'] }))
+    monitor.use(collector)
+
+    monitor.track('http_request', { url: '/api/chat', duration: 100 })
+    monitor.track('http_request', { url: '/api/chat', duration: 100 })
+    monitor.track('js_error', { message: 'boom' })
+    monitor.track('js_error', { message: 'boom' })
+
+    // http_request 被去重为 1 条，js_error 不在自定义范围内 → 2 条
+    expect(collector.events).toHaveLength(3)
+  })
 })
 
 describe('SamplingPlugin', () => {

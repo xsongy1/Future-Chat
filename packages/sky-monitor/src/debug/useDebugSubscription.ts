@@ -71,6 +71,13 @@ export function useDebugSubscription(
     phases: Array<{ name: string; startTime: number; endTime?: number }>
     tools: Array<{ toolCallId: string; name: string; startTime: number; endTime?: number; success?: boolean }>
     metrics: { ttfb?: number; chunkCount?: number; duration?: number }
+    usage?: {
+      inputTokens?: number
+      outputTokens?: number
+      totalTokens?: number
+      estimatedCost?: number | null
+      tokensPerSec?: number
+    }
   } | null>(null)
 
   /**
@@ -141,6 +148,18 @@ export function useDebugSubscription(
       // sse_first_chunk: 更新 TTFB
       if (event.type === 'sse_first_chunk' && currentTraceRef.current) {
         currentTraceRef.current.metrics.ttfb = Number(event.data.ttfb ?? 0)
+        updateTrace({ ...currentTraceRef.current })
+      }
+
+      // sse_usage: 更新 Token 用量与成本
+      if (event.type === 'sse_usage' && currentTraceRef.current) {
+        currentTraceRef.current.usage = {
+          inputTokens: Number(event.data.inputTokens ?? 0),
+          outputTokens: Number(event.data.outputTokens ?? 0),
+          totalTokens: Number(event.data.totalTokens ?? 0),
+          estimatedCost: event.data.estimatedCost == null ? null : Number(event.data.estimatedCost),
+          tokensPerSec: Number(event.data.tokensPerSec ?? 0),
+        }
         updateTrace({ ...currentTraceRef.current })
       }
 
@@ -277,6 +296,16 @@ export function useDebugSubscription(
               useDebugStore.getState().setReplayEvents(events)
             }
           }
+          if (event.type === 'sse_usage' && currentTraceRef.current) {
+            currentTraceRef.current.usage = {
+              inputTokens: Number(event.data.inputTokens ?? 0),
+              outputTokens: Number(event.data.outputTokens ?? 0),
+              totalTokens: Number(event.data.totalTokens ?? 0),
+              estimatedCost: event.data.estimatedCost == null ? null : Number(event.data.estimatedCost),
+              tokensPerSec: Number(event.data.tokensPerSec ?? 0),
+            }
+            updateTrace({ ...currentTraceRef.current })
+          }
         }
       }
 
@@ -289,7 +318,7 @@ export function useDebugSubscription(
     }
 
     return false
-  }, [handleEvent, setEvents, updateVital, addRequest])
+  }, [handleEvent, setEvents, updateVital, addRequest, updateTrace])
 
   /**
    * 轮询等待 DebugPlugin

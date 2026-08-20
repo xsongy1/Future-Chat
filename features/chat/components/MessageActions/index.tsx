@@ -25,6 +25,7 @@ import { VOICE_OPTIONS } from '@/features/voice/constants/voices'
 import { cn } from '@/lib/utils'
 import { useAudioPlayer } from '@/features/voice/hooks/use-audio-player'
 import { useToast } from '@/lib/hooks/use-toast'
+import { trackUserAction } from '@/lib/monitor/user-actions'
 
 interface MessageActionsProps {
   /** 消息内容 */
@@ -61,6 +62,9 @@ export function MessageActions({
     if (copyingRef.current) return
     copyingRef.current = true
 
+    // ========== 埋点：用户行为（复制消息） ==========
+    trackUserAction('copy', { role })
+
     try {
       await navigator.clipboard.writeText(content)
       onCopy?.()
@@ -80,7 +84,7 @@ export function MessageActions({
         copyingRef.current = false
       }, 500)
     }
-  }, [content, onCopy, toast])
+  }, [content, onCopy, toast, role])
 
   // 播放音频（防止重复点击）
   const handlePlay = useCallback(async () => {

@@ -1,8 +1,12 @@
 /**
  * DedupePlugin - 事件去重
  *
- * 同一类型 + 相同内容指纹的事件在窗口期内只保留第一条，
- * 防止错误风暴/重复上报打爆上报通道。
+ * 默认只对**错误类事件**做指纹去重（防错误风暴）：
+ * 同一类型 + 相同内容指纹的事件在窗口期内只保留第一条。
+ * 普通事件（http_request / web_vital / tool_end...）id 天然唯一、内容几乎不重复，
+ * 直接放行，避免为每个事件做 JSON 序列化指纹的开销（管道热路径优化）。
+ *
+ * 可通过 types 选项自定义需要去重的事件类型集合。
  */
 
 import type { MonitorEvent, Plugin } from '../core/types'
@@ -10,6 +14,8 @@ import type { MonitorEvent, Plugin } from '../core/types'
 export interface DedupePluginOptions {
   /** 去重窗口（ms），默认 5000 */
   windowMs?: number
+  /** 需要去重的事件类型；默认只对错误类（错误风暴防抖） */
+  types?: string[]
 }
 
 interface DedupeEntry {
@@ -17,18 +23,34 @@ interface DedupeEntry {
   time: number
 }
 
+/** 默认去重范围：错误类事件 */
+const DEFAULT_TYPES = [
+  'js_error',
+  'promise_error',
+  'resource_error',
+  'console_error',
+  'sse_error',
+]
+
 export class DedupePlugin implements Plugin {
   name = 'dedupe'
   priority = 100
 
   private readonly windowMs: number
+  private readonly types: string[]
   private entries: DedupeEntry[] = []
 
   constructor(options: DedupePluginOptions = {}) {
     this.windowMs = options.windowMs ?? 5000
+    this.types = options.types ?? DEFAULT_TYPES
   }
 
   processEvent(event: MonitorEvent): MonitorEvent | null {
+    // 非去重目标类型：零开销放行（管道热路径）
+    if (!this.types.includes(event.type)) {
+      return event
+    }
+
     const now = Date.now()
 
     // 清理过期条目

@@ -6,7 +6,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Trace } from '../src/core/trace'
 
 /** 收集 Trace 发出的事件 */
-function createTraceWithCollector(options: { aiMessageId: string; stallThreshold?: number }) {
+function createTraceWithCollector(options: {
+  aiMessageId: string
+  stallThreshold?: number
+  model?: string
+  provider?: string
+}) {
   const events: Array<{ type: string; data: Record<string, unknown> }> = []
   const trace = new Trace(options, (type, data) => {
     events.push({ type, data })
@@ -155,5 +160,127 @@ describe('Trace 状态', () => {
     expect(trace.getState()).toBe('active')
     trace.complete()
     expect(trace.getState()).toBe('completed')
+  })
+})
+
+describe('Trace 结构化错误', () => {
+  it('error 接受结构化对象，sse_error 携带 errorCode/statusCode/retryable', () => {
+    const { trace, events } = createTraceWithCollector({ aiMessageId: 'msg_1' })
+
+    trace.start()
+    trace.error({
+      code: 'RATE_LIMIT',
+      message: '请求频率超限',
+      statusCode: 429,
+      retryable: true,
+    })
+
+    const errorEvent = events.find((e) => e.type === 'sse_error')!
+    expect(errorEvent.data).toMatchObject({
+      errorCode: 'RATE_LIMIT',
+      message: '请求频率超限',
+      statusCode: 429,
+      retryable: true,
+    })
+  })
+
+  it('未提供 errorCode 时按 statusCode 自动分类（429→RATE_LIMIT，5xx→PROVIDER_ERROR）', () => {
+    const { trace, events } = createTraceWithCollector({ aiMessageId: 'msg_1' })
+
+    trace.start()
+    trace.error({ message: 'upstream down', statusCode: 503 })
+    expect(events.find((e) => e.type === 'sse_error')!.data.errorCode).toBe('PROVIDER_ERROR')
+
+    trace.abort() // 幂等拦截，不影响
+    const rateLimited = createTraceWithCollector({ aiMessageId: 'msg_2' })
+    rateLimited.trace.start()
+    rateLimited.trace.error({ message: 'too many', statusCode: 429 })
+    expect(rateLimited.events.find((e) => e.type === 'sse_error')!.data.errorCode).toBe('RATE_LIMIT')
+  })
+
+  it('error 兼容字符串形态（旧调用不破坏）', () => {
+    const { trace, events } = createTraceWithCollector({ aiMessageId: 'msg_1' })
+
+    trace.start()
+    trace.error('模型超时')
+
+    const errorEvent = events.find((e) => e.type === 'sse_error')!
+    expect(errorEvent.data.message).toBe('模型超时')
+    expect(errorEvent.data.errorCode).toBe('STREAM_ERROR')
+  })
+})
+
+describe('Trace model / provider / 用量', () => {
+  it('sse_start 携带 model 与 provider', () => {
+    const { trace, events } = createTraceWithCollector({
+      aiMessageId: 'msg_1',
+      model: 'deepseek-ai/DeepSeek-V3.2',
+      provider: 'siliconflow',
+    })
+
+    trace.start()
+
+    expect(events[0].data).toMatchObject({
+      model: 'deepseek-ai/DeepSeek-V3.2',
+      provider: 'siliconflow',
+    })
+    expect(trace.model).toBe('deepseek-ai/DeepSeek-V3.2')
+  })
+
+  it('setUsage 发出 sse_usage：token 明细 + 估算成本 + tokensPerSec', () => {
+    const { trace, events } = createTraceWithCollector({
+      aiMessageId: 'msg_1',
+      model: 'deepseek-ai/DeepSeek-V3.2',
+    })
+
+    trace.start()
+    vi.advanceTimersByTime(1000) // 已耗时 1s
+    trace.setUsage({ inputTokens: 1000, outputTokens: 2000 })
+
+    const usageEvent = events.find((e) => e.type === 'sse_usage')!
+    expect(usageEvent.data).toMatchObject({
+      inputTokens: 1000,
+      outputTokens: 2000,
+      totalTokens: 3000,
+      model: 'deepseek-ai/DeepSeek-V3.2',
+      // 1000/1M*0.27 + 2000/1M*1.1 = 0.00027 + 0.0022 = 0.00247
+      estimatedCost: 0.00247,
+      currency: 'USD',
+      tokensPerSec: 3000,
+    })
+  })
+
+  it('setUsage 的 model 缺省用 Trace 的 model', () => {
+    const { trace, events } = createTraceWithCollector({
+      aiMessageId: 'msg_1',
+      model: 'deepseek-ai/DeepSeek-V3',
+    })
+
+    trace.start()
+    trace.setUsage({ inputTokens: 100, outputTokens: 100 })
+
+    expect(events.find((e) => e.type === 'sse_usage')!.data.model).toBe('deepseek-ai/DeepSeek-V3')
+  })
+
+  it('setUsage 未知模型时 estimatedCost 为 null（不硬造数字）', () => {
+    const { trace, events } = createTraceWithCollector({ aiMessageId: 'msg_1' })
+
+    trace.start()
+    trace.setUsage({ inputTokens: 100, outputTokens: 100 })
+
+    const usageEvent = events.find((e) => e.type === 'sse_usage')!
+    expect(usageEvent.data.estimatedCost).toBeNull()
+    expect(usageEvent.data.totalTokens).toBe(200)
+  })
+
+  it('complete 携带 chunksPerSec 吞吐指标', () => {
+    const { trace, events } = createTraceWithCollector({ aiMessageId: 'msg_1' })
+
+    trace.start()
+    for (let i = 0; i < 10; i += 1) trace.recordChunk()
+    vi.advanceTimersByTime(2000)
+    trace.complete()
+
+    expect(events.find((e) => e.type === 'sse_complete')!.data.chunksPerSec).toBe(5)
   })
 })

@@ -59,7 +59,10 @@ function initMonitor(): MonitorInstance {
       ignoreErrors: [/ResizeObserver/i],
     })
   )
-  instance.use(new PerformancePlugin())
+  instance.use(new PerformancePlugin({
+    // CLS 偏移事件节流：15s 一条（默认 5s），面板数字更平稳
+    clsReportInterval: 15000,
+  }))
   instance.use(
     new NetworkPlugin({
       excludeUrls: [/\/api\/monitor/, /\/api\/chat/],

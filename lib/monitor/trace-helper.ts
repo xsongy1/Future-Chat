@@ -7,20 +7,25 @@
 
 'use client'
 
-import type { ToolResult } from '@sky-monitor/sdk'
+import type { TokenUsage, TraceError, ToolResult } from '@sky-monitor/sdk'
 import { getMonitor } from './index'
 
 /**
  * 创建并启动 Trace
  * @param aiMessageId - AI 消息 ID
  * @param previousTraceId - 重试时的原 Trace ID
+ * @param model - 使用的模型（用于模型对比与成本核算）
  */
-export function startTrace(aiMessageId: string, previousTraceId?: string): void {
+export function startTrace(
+  aiMessageId: string,
+  previousTraceId?: string,
+  model?: string
+): void {
   try {
     const monitor = getMonitor()
     if (!monitor) return
 
-    const trace = monitor.createTrace({ aiMessageId, previousTraceId })
+    const trace = monitor.createTrace({ aiMessageId, previousTraceId, model })
     monitor.setCurrentTrace(trace)
     trace.start()
 
@@ -37,11 +42,11 @@ export function startTrace(aiMessageId: string, previousTraceId?: string): void 
 /**
  * 结束当前 Trace
  * @param reason - 结束原因
- * @param errorMsg - 错误信息（仅 error 时需要）
+ * @param error - 错误信息；字符串为简单错误，对象为结构化错误（code/statusCode/retryable）
  */
 export function endTrace(
   reason: 'complete' | 'error' | 'abort',
-  errorMsg?: string
+  error?: string | TraceError
 ): void {
   try {
     const monitor = getMonitor()
@@ -55,16 +60,33 @@ export function endTrace(
         trace.complete()
         break
       case 'error':
-        trace.error(errorMsg || 'Unknown error')
+        trace.error(error ?? 'Unknown error')
         break
       case 'abort':
-        trace.abort(errorMsg || 'user_cancel')
+        trace.abort(typeof error === 'string' ? error : 'user_cancel')
         break
     }
 
     monitor.setCurrentTrace(null)
   } catch (e) {
     console.warn('[TraceHelper] endTrace failed:', e)
+  }
+}
+
+/**
+ * 记录 Token 用量（后端透传 usage 后调用）
+ */
+export function setTraceUsage(usage: TokenUsage): void {
+  try {
+    const monitor = getMonitor()
+    if (!monitor) return
+
+    const trace = monitor.getCurrentTrace()
+    if (!trace) return
+
+    trace.setUsage(usage)
+  } catch (e) {
+    console.warn('[TraceHelper] setTraceUsage failed:', e)
   }
 }
 

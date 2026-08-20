@@ -161,6 +161,10 @@ function getEventSummary(event: { type: string; data: Record<string, unknown> })
       return `错误: ${data.error ?? ''}`
     case 'sse_abort':
       return `中止: ${data.reason ?? ''}`
+    case 'sse_usage':
+      return `Token 输入=${data.inputTokens} 输出=${data.outputTokens}${
+        data.estimatedCost != null ? ` 成本=$${data.estimatedCost}` : ''
+      }`
     case 'sse_first_chunk':
       return `首字节 ttfb=${data.ttfb}ms`
     case 'sse_stall':

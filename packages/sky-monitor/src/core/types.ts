@@ -73,6 +73,42 @@ export interface ToolResult {
   [key: string]: unknown
 }
 
+/**
+ * 结构化错误码：AI Chat 场景的统一错误分类
+ */
+export type ErrorCode =
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT'
+  | 'ABORTED'
+  | 'AUTH_ERROR'
+  | 'RATE_LIMIT'
+  | 'PROVIDER_ERROR'
+  | 'MODEL_ERROR'
+  | 'INVALID_REQUEST'
+  | 'STREAM_ERROR'
+
+/** 结构化错误（sse_error 事件载荷） */
+export interface TraceError {
+  /** 错误码分类 */
+  code?: ErrorCode
+  /** 人类可读错误信息 */
+  message?: string
+  /** HTTP 状态码（如有） */
+  statusCode?: number
+  /** 是否可重试（供上层做自动重试/降级决策） */
+  retryable?: boolean
+  [key: string]: unknown
+}
+
+/** Token 用量（由后端透传 usage，前端 SDK 聚合成本） */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens?: number
+  /** 实际使用的模型（缺省用 Trace 的 model） */
+  model?: string
+}
+
 /** Trace 创建选项 */
 export interface TraceOptions {
   /** AI 消息 ID */
@@ -81,4 +117,8 @@ export interface TraceOptions {
   previousTraceId?: string
   /** 卡顿检测阈值（ms），默认 3000 */
   stallThreshold?: number
+  /** 使用的模型（如 deepseek-ai/DeepSeek-V3.2），用于模型对比与成本核算 */
+  model?: string
+  /** 模型供应商（如 siliconflow/openai），缺省从 model 推导 */
+  provider?: string
 }

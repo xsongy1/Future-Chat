@@ -52,6 +52,8 @@ interface AIResponseResult {
   answerContent: string
   toolCalls: ToolCall[]
   toolPromises: Promise<ToolExecutionResult>[]
+  /** 上游响应的 Token 用量（OpenAI 兼容 usage 字段） */
+  usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null
 }
 
 const MAX_TOOL_ROUNDS = 5
@@ -72,6 +74,7 @@ async function consumeAIResponse(
   let buffer = ''
   let thinkingContent = ''
   let answerContent = ''
+  let usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null
   const toolCallsChunks: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> = []
   const toolPromises: Promise<ToolExecutionResult>[] = []
   const startedTools = new Set<string>()
@@ -91,6 +94,15 @@ async function consumeAIResponse(
       try {
         const parsed = JSON.parse(data)
         const delta = parsed.choices?.[0]?.delta
+
+        // Token 用量（OpenAI 兼容流式响应在末尾 chunk 携带 usage）
+        if (parsed.usage) {
+          usage = {
+            inputTokens: parsed.usage.prompt_tokens ?? 0,
+            outputTokens: parsed.usage.completion_tokens ?? 0,
+            totalTokens: parsed.usage.total_tokens ?? 0,
+          }
+        }
 
         // thinking
         if (delta?.reasoning_content) {
@@ -162,7 +174,7 @@ async function consumeAIResponse(
     }
   }
 
-  return { thinkingContent, answerContent, toolCalls, toolPromises }
+  return { thinkingContent, answerContent, toolCalls, toolPromises, usage }
 }
 
 /**
@@ -268,9 +280,13 @@ export function createSSEStream(
       const writer = new SSEWriter(controller, encoder, sessionId)
 
       try {
-        const { thinkingContent, answerContent } = await consumeAIResponse(reader, writer, cancelSignal, false)
+        const { thinkingContent, answerContent, usage } = await consumeAIResponse(reader, writer, cancelSignal, false)
 
         await persistMessage(messageId, conversationId, userId, { thinkingContent, answerContent, toolCallsData: null })
+
+        // Token 用量透传给前端（监控成本/吞吐）
+        if (usage && usage.totalTokens > 0) writer.sendUsage(usage)
+
         writer.sendComplete()
         writer.close()
       } catch (error) {
@@ -302,6 +318,7 @@ export function createSSEStreamWithTools(
       try {
         let thinkingContent = ''
         let finalAnswerContent = ''
+        let totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null
         const allToolCalls: ToolCall[] = []
         const allToolResults: Array<{ toolCallId: string; name: string; result: Record<string, unknown> }> = []
 
@@ -320,8 +337,16 @@ export function createSSEStreamWithTools(
           console.log(`[Stream] === 第 ${round} 轮 ===`)
 
           // 读取 AI 响应，同时启动工具执行
-          const { thinkingContent: roundThinking, answerContent: roundAnswer, toolCalls: roundToolCalls, toolPromises } =
+          const { thinkingContent: roundThinking, answerContent: roundAnswer, toolCalls: roundToolCalls, toolPromises, usage: roundUsage } =
             await consumeAIResponse(currentReader, writer, cancelSignal, true)
+
+          // 多轮 Token 用量累加（每轮请求都会产生 usage）
+          if (roundUsage && roundUsage.totalTokens > 0) {
+            totalUsage ??= { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+            totalUsage.inputTokens += roundUsage.inputTokens
+            totalUsage.outputTokens += roundUsage.outputTokens
+            totalUsage.totalTokens += roundUsage.totalTokens
+          }
 
           thinkingContent += roundThinking
           console.log(`[Stream] AI 返回: answer=${roundAnswer.length}字, tools=${roundToolCalls.length}个`)
@@ -387,6 +412,9 @@ export function createSSEStreamWithTools(
           toolCallsData: allToolCalls.length > 0 ? allToolCalls : null,
           toolResultsData: allToolResults.length > 0 ? allToolResults : null,
         })
+
+        // Token 用量透传给前端（多轮累加）
+        if (totalUsage && totalUsage.totalTokens > 0) writer.sendUsage(totalUsage)
 
         writer.sendComplete()
         writer.close()

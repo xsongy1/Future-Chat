@@ -21,6 +21,8 @@ import {
   endTrace,
   getCurrentTraceId,
 } from '@/lib/monitor/trace-helper'
+import { getMonitor } from '@/lib/monitor'
+import { trackUserAction } from '@/lib/monitor/user-actions'
 
 /**
  * 通知后端取消正在执行的工具（/api/chat/cancel-tool）
@@ -58,6 +60,9 @@ export const ChatService = {
    * 中断当前流式请求
    */
   abortStream(): void {
+    // ========== 埋点：用户行为（停止生成）==========
+    trackUserAction('stop_generation')
+
     // ========== 埋点：先结束 Trace ==========
     endTrace('abort', 'user_cancel')
 
@@ -233,8 +238,14 @@ export const ChatService = {
     const userMessageId = createUserMessage ? nanoid() : undefined
     const aiMessageId = nanoid()
 
-    // ========== 埋点：创建并启动 Trace ==========
-    startTrace(aiMessageId, previousTraceId)
+    // ========== 埋点：上下文（会话维度，userId 可在应用入口用 setContext 注入） ==========
+    getMonitor()?.setContext({ conversationId })
+
+    // ========== 埋点：用户行为（发送消息） ==========
+    trackUserAction('send_message', { conversationId, model: store.selectedModel })
+
+    // ========== 埋点：创建并启动 Trace（携带模型信息） ==========
+    startTrace(aiMessageId, previousTraceId, store.selectedModel)
 
     // 添加用户消息
     if (createUserMessage && userMessageId) {
@@ -286,7 +297,14 @@ export const ChatService = {
         signal: streamController.signal,
       })
 
-      if (!response.ok) throw new Error(`API error: ${response.status}`)
+      if (!response.ok) {
+        // 保留 HTTP 状态码，供埋点做结构化错误分类
+        const err = new Error(`API error: ${response.status}`) as Error & {
+          status?: number
+        }
+        err.status = response.status
+        throw err
+      }
 
       // 读取响应头中的标题更新，立即同步到前端 store
       await syncConversationTitle(conversationId, response)
@@ -309,8 +327,16 @@ export const ChatService = {
         displayState: 'error',
       })
       store.stopStreaming()
-      // ========== 埋点：错误结束 ==========
-      endTrace('error', (e as Error).message)
+
+      // ========== 埋点：结构化错误结束（statusCode → 自动分类，429 等可重试） ==========
+      const err = e as Error & { status?: number }
+      const isNetworkError = err.name === 'TypeError' && err.status === undefined
+      endTrace('error', {
+        code: isNetworkError ? 'NETWORK_ERROR' : undefined,
+        message: err.message || 'Unknown error',
+        statusCode: err.status,
+        retryable: isNetworkError || err.status === 429 || err.status === 503,
+      })
     } finally {
       useChatStore.getState().setStreamAbortController(null)
       store.setSendingMessage(false)
@@ -325,6 +351,9 @@ export const ChatService = {
    */
   async retryMessage(conversationId: string, messageId: string): Promise<void> {
     const store = useChatStore.getState()
+
+    // ========== 埋点：用户行为（重试） ==========
+    trackUserAction('retry', { messageId })
 
     // ========== 埋点：获取当前 Trace ID ==========
     const previousTraceId = getCurrentTraceId()
@@ -375,6 +404,9 @@ export const ChatService = {
   ): Promise<void> {
     const store = useChatStore.getState()
     const index = store.messages.findIndex((m) => m.id === messageId)
+
+    // ========== 埋点：用户行为（编辑重发） ==========
+    trackUserAction('edit_message', { messageId })
 
     if (index === -1) return
     if (store.messages[index].role !== 'user') return
