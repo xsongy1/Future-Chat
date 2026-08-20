@@ -1,17 +1,9 @@
 /**
- * 调试面板状态管理
+ * 调试面板状态管理（zustand）
  */
 
 import { create } from 'zustand'
-import type {
-  MonitorEvent,
-  TraceData,
-  HttpRequest,
-  SessionData,
-  VitalsData,
-  TabType,
-} from './types'
-import type { ErrorReplayEvent } from '@/lib/monitor/compat/types'
+import type { MonitorEvent, TraceData, HttpRequest, SessionData, VitalsData, TabType, ErrorReplayEvent } from './types'
 
 interface DebugStore {
   // ========== 状态 ==========
@@ -228,13 +220,13 @@ export const useDebugStore = create<DebugStore>((set) => ({
   addErrorReplayEvent: (event) =>
     set((state) => {
       const newEvents = [event, ...state.errorReplayEvents].slice(0, MAX_ERROR_REPLAY_EVENTS)
-      
+
       // 计算待处理的错误回溯数
       const scheduled = newEvents.filter((e) => e.type === 'replay_scheduled').length
       const uploaded = newEvents.filter((e) => e.type === 'replay_uploaded').length
       const pendingCount = Math.max(0, scheduled - uploaded)
-      
-      return { 
+
+      return {
         errorReplayEvents: newEvents,
         pendingErrorReplays: pendingCount,
       }

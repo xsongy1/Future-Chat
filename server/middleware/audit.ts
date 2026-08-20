@@ -1,5 +1,6 @@
 import { AuditLogRepository, type AuditAction } from '@/server/repositories/audit-log.repository'
 import type { Prisma } from '@prisma/client'
+import { getClientIp } from '@/server/utils/ip'
 
 interface AuditParams {
   userId: string
@@ -16,9 +17,8 @@ export async function audit(params: AuditParams) {
   let userAgent: string | undefined
 
   if (request) {
-    ipAddress = request.headers.get('x-forwarded-for') || 
-                request.headers.get('x-real-ip') || 
-                undefined
+    // 只信任已声明可信代理（TRUST_PROXY）的转发头，详见 server/utils/ip.ts
+    ipAddress = getClientIp(request)
     userAgent = request.headers.get('user-agent') || undefined
   }
 

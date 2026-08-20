@@ -98,6 +98,14 @@ const getInitialModel = (): string => {
   return getDefaultModel().id
 }
 
+const getInitialWebSearch = (): boolean => {
+  if (typeof window === 'undefined') return false
+  try {
+    return StorageManager.get<boolean>(STORAGE_KEYS.USER.ENABLE_WEB_SEARCH) ?? false
+  } catch {}
+  return false
+}
+
 const initialState: ChatState = {
   messages: [],
   messageCache: new Map(),
@@ -111,7 +119,7 @@ const initialState: ChatState = {
   loadAbortController: null,
   selectedModel: getInitialModel(),
   enableThinking: false,
-  enableWebSearch: false,
+  enableWebSearch: getInitialWebSearch(),
 }
 
 export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
@@ -244,7 +252,12 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
 
   toggleThinking: (enabled) => set({ enableThinking: enabled }),
 
-  toggleWebSearch: (enabled) => set({ enableWebSearch: enabled }),
+  toggleWebSearch: (enabled) => {
+    try {
+      StorageManager.set(STORAGE_KEYS.USER.ENABLE_WEB_SEARCH, enabled)
+    } catch {}
+    set({ enableWebSearch: enabled })
+  },
 
   // ===== 重置 =====
   reset: () => set(initialState),

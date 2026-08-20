@@ -9,6 +9,9 @@ import type { Tool } from './types'
 const TAVILY_API_URL = 'https://api.tavily.com/search'
 const SEARCH_TIMEOUT = 10000 // 10 秒超时
 
+// 动态取当前年份，避免工具描述中的年份硬编码每年都要改
+const CURRENT_YEAR = new Date().getFullYear()
+
 /**
  * Tavily 搜索结果
  */
@@ -128,13 +131,13 @@ export function extractSearchSources(response: TavilyResponse): SearchSource[] {
 export function createWebSearchTool(apiKey: string): Tool {
   return {
     name: 'web_search',
-    description: '搜索互联网获取 2025 年及以后的最新信息。当用户询问实时信息、新闻、最新数据、当前事件时必须使用此工具。',
+    description: `搜索互联网获取 ${CURRENT_YEAR} 年及以后的最新信息。当用户询问实时信息、新闻、最新数据、当前事件时必须使用此工具。`,
     parameters: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: '搜索关键词，建议包含"2025"或具体年份以获取最新结果',
+          description: `搜索关键词，建议包含"${CURRENT_YEAR}"或具体年份以获取最新结果`,
         },
       },
       required: ['query'],

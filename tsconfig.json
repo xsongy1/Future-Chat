@@ -25,6 +25,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@sky-monitor/sdk": [
+        "./packages/sky-monitor/src/index.ts"
+      ],
+      "@sky-monitor/sdk/*": [
+        "./packages/sky-monitor/src/*"
       ]
     }
   },
@@ -37,6 +43,8 @@
     "**/*.mts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "vitest.config.ts",
+    "packages/sky-monitor/tests"
   ]
 }

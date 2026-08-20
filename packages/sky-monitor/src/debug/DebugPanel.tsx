@@ -46,7 +46,7 @@ const TABS: { id: TabType; label: string }[] = [
   { id: 'queue', label: '队列' },
 ]
 
-interface DebugPanelProps {
+export interface DebugPanelProps {
   /** 连接状态 */
   connectionStatus?: 'connecting' | 'connected' | 'error'
   /** 连接错误信息 */

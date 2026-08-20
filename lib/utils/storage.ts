@@ -20,6 +20,7 @@ export const STORAGE_KEYS = {
     SELECTED_MODEL: 'user-selected-model',
     PENDING_MESSAGE: 'user-pending-message',
     SELECTED_VOICE: 'user-selected-voice',
+    ENABLE_WEB_SEARCH: 'user-enable-web-search',
   },
 
   // UI 偏好（退出登录时保留）

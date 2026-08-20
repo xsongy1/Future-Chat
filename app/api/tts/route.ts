@@ -43,6 +43,17 @@ export async function POST(req: Request) {
       return Response.json({ error: 'Text is required' }, { status: 400 })
     }
 
+    // 限制文本长度（成本与上游 API 限制保护）
+    const MAX_TEXT_LENGTH = 5000
+    if (text.length > MAX_TEXT_LENGTH) {
+      return Response.json(
+        {
+          error: `Text is too long: ${text.length} characters. Maximum is ${MAX_TEXT_LENGTH}.`,
+        },
+        { status: 400 }
+      )
+    }
+
     // 验证输出格式
     const validFormats = ['mp3', 'opus', 'wav', 'pcm']
     if (!validFormats.includes(format)) {

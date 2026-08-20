@@ -61,6 +61,14 @@ DATABASE_URL="postgresql://user:password@localhost:5432/skychat"
 AUTH_SECRET="your-secret-key"
 AUTH_TRUST_HOST="true"
 
+# 传统 JWT 认证（生产环境必填，至少 32 字符）
+# 生成：node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+JWT_SECRET="your-strong-random-secret"
+
+# 可选：部署在可信反向代理（Nginx/Caddy 等）之后时设置，审计日志与登录限流才信任转发头
+# 取值：true（信任所有代理）或逗号分隔的代理 IP/IPv4 CIDR，如 "127.0.0.1,10.0.0.0/8"
+TRUST_PROXY="true"
+
 # OAuth
 AUTH_GOOGLE_ID="your-google-client-id"
 AUTH_GOOGLE_SECRET="your-google-client-secret"

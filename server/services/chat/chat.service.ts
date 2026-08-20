@@ -213,7 +213,7 @@ async function createMessages(
         },
       }),
     ])
-  } else {
+  } else {//一般对应 “重试”这一操作
     await prisma.message.create({
       data: {
         id: aiMessageId,

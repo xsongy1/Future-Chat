@@ -127,16 +127,21 @@ model Message {
 }
 
 
-// 监控事件表 - 存储 SDK 上报的埋点数据
+// 监控事件表 - 存储 @sky-monitor/sdk 上报的埋点数据
+// 维度字段（appId/sessionId/traceId）从 context 解析为独立列，便于聚合查询
 model MonitorEvent {
-  id        String   @id @default(cuid())
-  type      String   // 事件类型: sse_start, sse_complete, tool_start 等
+  id        String   @id // 事件 ID（SDK 生成，用于去重）
+  type      String // 事件类型: sse_start, sse_complete, js_error, http_request ...
   timestamp DateTime // 事件发生时间（客户端时间戳）
-  data      Json     // 事件数据: { traceId, ttfb, duration, ... }
-  context   Json     // 上下文: { appId, sessionId, traceId, ... }
+  data      Json // 事件载荷: { traceId, ttfb, duration, ... }
+  context   Json // 完整上下文: { appId, sessionId, traceId, ... }
+  appId     String? // 应用标识（从 context 解析）
+  sessionId String? // 会话 ID（从 context 解析）
+  traceId   String? // Trace ID（从 context 解析）
   createdAt DateTime @default(now())
 
-  @@index([type])
-  @@index([timestamp])
   @@index([type, timestamp])
+  @@index([sessionId, timestamp])
+  @@index([traceId])
+  @@index([appId, timestamp])
 }

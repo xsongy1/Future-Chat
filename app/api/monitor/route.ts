@@ -1,13 +1,15 @@
 /**
  * 监控事件上报 API
  *
- * 接收前端 SDK 上报的埋点事件，存储到数据库
+ * 接收前端 @sky-monitor/sdk 上报的埋点事件（单条或批量），
+ * 解析 context 中的维度字段（appId/sessionId/traceId）落库，
+ * 便于按维度聚合查询。
  */
 
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/server/db/client'
 
-/** 事件结构 */
+/** 事件结构（与 SDK 事件信封对齐） */
 interface MonitorEventPayload {
   id: string
   type: string
@@ -38,7 +40,7 @@ function validateEvent(event: unknown): event is MonitorEventPayload {
 
 /**
  * POST /api/monitor
- * 接收单个事件或事件数组
+ * 接收单个事件或事件数组，批量写入数据库（按 id 去重）
  */
 export async function POST(request: NextRequest) {
   try {
@@ -66,7 +68,7 @@ export async function POST(request: NextRequest) {
       validEvents.push(event)
     }
 
-    // 批量写入数据库
+    // 批量写入数据库：维度字段从 context 解析出来作为独立列
     await prisma.monitorEvent.createMany({
       data: validEvents.map((e) => ({
         id: e.id,
@@ -74,8 +76,11 @@ export async function POST(request: NextRequest) {
         timestamp: new Date(e.timestamp),
         data: e.data as object,
         context: e.context as object,
+        appId: typeof e.context.appId === 'string' ? e.context.appId : null,
+        sessionId: typeof e.context.sessionId === 'string' ? e.context.sessionId : null,
+        traceId: typeof e.context.traceId === 'string' ? e.context.traceId : null,
       })),
-      skipDuplicates: true, // 跳过重复 ID
+      skipDuplicates: true, // 跳过重复 ID（SDK 端离线补发场景）
     })
 
     return NextResponse.json({ success: true, count: validEvents.length })

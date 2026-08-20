@@ -2,7 +2,28 @@
  * 调试面板类型定义
  */
 
-import type { MonitorEvent } from '@jerry_aurora/sky-monitor-sdk'
+import type { MonitorEvent } from '../core/types'
+
+export type { MonitorEvent }
+
+/** 错误回溯事件（Replay 插件接入后由 SDK 发出，面板先行支持展示） */
+export interface ErrorReplayEvent {
+  /** 事件类型: error_recorded / replay_scheduled / replay_uploaded 等 */
+  type: string
+  /** 错误信息 */
+  errorMessage?: string
+  /** 错误发生的 URL */
+  url?: string
+  /** 发生时间戳 */
+  timestamp?: number
+  /** 关联的 traceId */
+  traceId?: string
+  /** 关联的 sessionId */
+  sessionId?: string
+  /** 附加载荷（如 replay_uploaded 时的 routes） */
+  payload?: unknown
+  [key: string]: unknown
+}
 
 /** Trace 数据 */
 export interface TraceData {
@@ -84,7 +105,6 @@ export const EVENT_COLORS: Record<string, string> = {
   sse_first_chunk: '#60a5fa',
   sse_stall: '#f59e0b',
   sse_resume: '#22c55e',
-  user_retry: '#8b5cf6',
 
   // Phase 相关 - 紫色系
   phase_start: '#8b5cf6',
@@ -93,18 +113,6 @@ export const EVENT_COLORS: Record<string, string> = {
   // Tool 相关 - 青色系
   tool_start: '#06b6d4',
   tool_end: '#22d3ee',
-
-  // Image 相关 - 粉色系
-  image_load_start: '#ec4899',
-  image_load_complete: '#f472b6',
-  image_load_error: '#ef4444',
-
-  // 旧 Trace 事件（兼容）
-  trace_start: '#3b82f6',
-  trace_end: '#3b82f6',
-  trace_phase: '#60a5fa',
-  trace_tool: '#93c5fd',
-  trace_chunk: '#bfdbfe',
 
   // Session 相关 - 绿色系
   session_start: '#22c55e',
@@ -117,8 +125,9 @@ export const EVENT_COLORS: Record<string, string> = {
   resource_error: '#fca5a5',
   console_error: '#fecaca',
 
-  // Performance - 紫色系
+  // Performance
   web_vital: '#a855f7',
+  page_loaded: '#a855f7',
 
   // Network - 橙色系
   http_request: '#f97316',
@@ -126,6 +135,9 @@ export const EVENT_COLORS: Record<string, string> = {
   // Replay - 青色系
   replay_events: '#06b6d4',
   error_replay: '#0891b2',
+
+  // 自定义
+  custom_test: '#6b7280',
 }
 
 /** 获取事件颜色 */
@@ -148,6 +160,3 @@ export function getVitalColor(name: keyof typeof VITALS_THRESHOLDS, value: numbe
   if (value < threshold.poor) return '#eab308' // 黄色
   return '#ef4444' // 红色
 }
-
-/** 重新导出 MonitorEvent */
-export type { MonitorEvent }
