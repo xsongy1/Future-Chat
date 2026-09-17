@@ -47,7 +47,11 @@ export class SSEWriter {
       sessionId: this._sessionId,
     }
 
-    if (tc.function.name === 'web_search') event.query = args.query
+    // 复用同一个 query 字段：web_search 与 knowledge_search 都有一个自然语言 query，
+    // 前端「搜索中…」/「正在查询知识库…」都读它
+    if (tc.function.name === 'web_search' || tc.function.name === 'knowledge_search') {
+      event.query = args.query
+    }
     if (tc.function.name === 'generate_image') event.prompt = args.prompt
 
     this._send(event)
@@ -74,6 +78,11 @@ export class SSEWriter {
     if (result.name === 'web_search') {
       event.resultCount = parsed.resultCount || 0
       event.sources = parsed.sources || []
+    }
+    // 知识库来源是「文件」而不是 URL，单列一个字段，避免前端按 URL 解析报错
+    if (result.name === 'knowledge_search') {
+      event.resultCount = parsed.resultCount || 0
+      event.knowledgeSources = parsed.sources || []
     }
     if (result.name === 'generate_image') {
       event.imageUrl = parsed.url

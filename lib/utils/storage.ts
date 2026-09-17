@@ -21,6 +21,9 @@ export const STORAGE_KEYS = {
     PENDING_MESSAGE: 'user-pending-message',
     SELECTED_VOICE: 'user-selected-voice',
     ENABLE_WEB_SEARCH: 'user-enable-web-search',
+    ENABLE_KNOWLEDGE_BASE: 'user-enable-knowledge-base',
+    SELECTED_KNOWLEDGE_BASE: 'user-selected-knowledge-base',
+    SELECTED_KNOWLEDGE_BASE_NAME: 'user-selected-knowledge-base-name',
   },
 
   // UI 偏好（退出登录时保留）

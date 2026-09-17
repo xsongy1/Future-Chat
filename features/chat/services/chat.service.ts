@@ -287,6 +287,9 @@ export const ChatService = {
           model: store.selectedModel,
           enableThinking: store.enableThinking,
           enableWebSearch: store.enableWebSearch,
+          enableKnowledgeBase: store.enableKnowledgeBase,
+          // 用户选定的知识库：服务端据此把 knowledge_search 收敛到该知识库
+          knowledgeBaseId: store.selectedKnowledgeBaseId || undefined,
           enableImageGeneration,
           imageConfig,
           thinkingBudget: 4096,

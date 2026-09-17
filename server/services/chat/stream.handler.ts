@@ -11,7 +11,13 @@
 
 import { parseSSELine, splitSSEBuffer } from '@/shared/utils/sse'
 import { createChatCompletion } from '@/server/services/ai/siliconflow'
-import { toolRegistry, type ToolCall } from '@/server/services/tools'
+import {
+  toolRegistry,
+  type Tool,
+  type ToolCall,
+  type OpenAIToolDefinition,
+  type ToolExecutionContext,
+} from '@/server/services/tools'
 import { formatToolMessages } from '@/server/services/tools/handler'
 import { executeImageGeneration } from '@/server/services/tools/image-generation'
 import { registerRunningTool, unregisterRunningTool } from '@/server/services/tools/cancellation'
@@ -35,6 +41,16 @@ export interface StreamContextWithTools extends StreamContext {
   contextMessages: ChatMessage[]
   enableThinking: boolean
   thinkingBudget: number
+  /**
+   * 本次请求允许使用的工具（来自 ChatService 依据用户开关算出的 enabledTools）。
+   *
+   * 这是修复「关闭知识库后仍可能执行 knowledge_search」的关键：
+   * 多轮循环里每一轮都用它（而不是整个 ToolRegistry）下发工具，
+   * 并在真正执行前再用 allowedToolNames 校验一次工具名。
+   */
+  allowedTools: Tool[]
+  /** 用户选择的知识库 ID（透传给 knowledge_search 收敛检索范围） */
+  knowledgeBaseId?: string
 }
 
 /** 工具执行结果 */
@@ -68,7 +84,9 @@ async function consumeAIResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   writer: SSEWriter,
   cancelSignal: AbortSignal | undefined,
-  collectTools: boolean
+  collectTools: boolean,
+  toolContext?: ToolExecutionContext,
+  allowedToolNames?: Set<string>
 ): Promise<AIResponseResult> {
   const decoder = new TextDecoder()
   let buffer = ''
@@ -145,7 +163,7 @@ async function consumeAIResponse(
                 }
                 writer.sendToolCall(toolCall)
                 console.log(`[Stream] 启动工具: ${chunk.function.name}, args: ${args}`)
-                toolPromises.push(startToolExecution(toolCall, writer, cancelSignal))
+                toolPromises.push(startToolExecution(toolCall, writer, cancelSignal, toolContext, allowedToolNames))
               }
             }
           }
@@ -169,7 +187,7 @@ async function consumeAIResponse(
       if (!startedTools.has(tc.id)) {
         writer.sendToolCall(tc)
         console.log(`[Stream] 延迟启动工具: ${tc.function.name}, args: ${tc.function.arguments}`)
-        toolPromises.push(startToolExecution(tc, writer, cancelSignal))
+        toolPromises.push(startToolExecution(tc, writer, cancelSignal, toolContext, allowedToolNames))
       }
     }
   }
@@ -179,17 +197,38 @@ async function consumeAIResponse(
 
 /**
  * 启动工具执行（异步，带进度回调，支持取消）
+ *
+ * @param toolContext - 执行上下文（当前用户 / API Key / 选择的知识库），透传给工具用于归属校验，
+ *                      不作为工具参数从模型侧传入
+ * @param allowedToolNames - 本次请求允许执行的工具名集合（来自用户开关）。
+ *                      模型可能点名一个本轮没下发的工具，这里必须拒绝，
+ *                      否则「关闭私有知识库」这类开关会被绕过。
  */
 async function startToolExecution(
   toolCall: ToolCall,
   writer: SSEWriter,
-  cancelSignal?: AbortSignal
+  cancelSignal?: AbortSignal,
+  toolContext?: ToolExecutionContext,
+  allowedToolNames?: Set<string>
 ): Promise<ToolExecutionResult> {
   const name = toolCall.function.name
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(toolCall.function.arguments)
   } catch { /* ignore */ }
+
+  // 白名单校验（第一道：用户开关的最终裁决权）
+  // 仍返回一条 tool 结果，保证 assistant(tool_calls) 与 tool 消息成对出现，
+  // 否则下一轮请求会因消息不完整被上游拒绝。
+  if (allowedToolNames && !allowedToolNames.has(name)) {
+    console.warn(`[Stream] 拒绝执行未在本次请求中启用的工具: ${name}`)
+    return {
+      toolCallId: toolCall.id,
+      name,
+      success: false,
+      content: JSON.stringify({ error: `工具 ${name} 未在本次请求中启用，已拒绝执行` }),
+    }
+  }
 
   // 注册到取消注册表，/api/chat/cancel-tool 可通过 toolCallId 取消本次执行
   const signal = registerRunningTool(toolCall.id, name, cancelSignal)
@@ -213,8 +252,8 @@ async function startToolExecution(
       }
       return { toolCallId: toolCall.id, name, success: true, content: JSON.stringify(result) }
     } else {
-      // 其他工具：直接执行
-      const content = await toolRegistry.executeByName(name, args, signal)
+      // 其他工具：直接执行（透传执行上下文，供需要归属校验的工具使用）
+      const content = await toolRegistry.executeByName(name, args, signal, toolContext)
 
       if (signal.aborted) {
         return {
@@ -308,8 +347,25 @@ export function createSSEStreamWithTools(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   context: StreamContextWithTools
 ): ReadableStream {
-  const { messageId, conversationId, userId, sessionId, apiKey, model, contextMessages, enableThinking, thinkingBudget, cancelSignal } = context
+  const { messageId, conversationId, userId, sessionId, apiKey, model, contextMessages, enableThinking, thinkingBudget, cancelSignal, allowedTools, knowledgeBaseId } = context
   const encoder = new TextEncoder()
+
+  // 工具执行上下文：把服务端认证得到的 userId、本次请求解析出的 apiKey、
+  // 以及用户选择的知识库 ID 透传给工具。
+  // knowledge_search 依赖它做知识库归属校验（绝不能从模型参数或客户端请求体取 userId）。
+  const toolContext: ToolExecutionContext = { userId, conversationId, apiKey, knowledgeBaseId }
+
+  // 本次请求允许的工具：定义（下发给模型）与名字（执行前校验）都从它派生。
+  // 关键点：多轮循环里每一轮都用这一份，而不是 toolRegistry.getToolDefinitions()。
+  const toolDefinitions: OpenAIToolDefinition[] = allowedTools.map((tool) => ({
+    type: 'function' as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }))
+  const allowedToolNames = new Set(allowedTools.map((tool) => tool.name))
 
   return new ReadableStream({
     async start(controller) {
@@ -338,7 +394,7 @@ export function createSSEStreamWithTools(
 
           // 读取 AI 响应，同时启动工具执行
           const { thinkingContent: roundThinking, answerContent: roundAnswer, toolCalls: roundToolCalls, toolPromises, usage: roundUsage } =
-            await consumeAIResponse(currentReader, writer, cancelSignal, true)
+            await consumeAIResponse(currentReader, writer, cancelSignal, true, toolContext, allowedToolNames)
 
           // 多轮 Token 用量累加（每轮请求都会产生 usage）
           if (roundUsage && roundUsage.totalTokens > 0) {
@@ -383,13 +439,15 @@ export function createSSEStreamWithTools(
           ]
 
           // 发起下一轮 AI 请求
+          // 注意：这里必须继续用本次请求允许的 tools，不能换成 toolRegistry.getToolDefinitions()，
+          // 否则关闭「私有知识库」的用户在第 2 轮又会被重新暴露 knowledge_search。
           console.log('[Stream] 发起下一轮 AI 请求')
           const { reader: nextReader } = await createChatCompletion(apiKey, {
             model,
             messages: currentMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
             enableThinking,
             thinkingBudget,
-            tools: toolRegistry.getToolDefinitions(),
+            tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
             signal: cancelSignal,
           })
           currentReader = nextReader

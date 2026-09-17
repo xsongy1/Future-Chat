@@ -7,7 +7,7 @@
 
 'use client'
 
-import type { TokenUsage, TraceError, ToolResult } from '@sky-monitor/sdk'
+import type { TokenUsage, TraceError, ToolResult } from '@xxxsongy/chat_monitor'
 import { getMonitor } from './index'
 
 /**

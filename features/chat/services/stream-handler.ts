@@ -205,6 +205,7 @@ export class StreamHandler {
             imageUrl: data.imageUrl,
             resultCount: data.resultCount,
             sources: data.sources,
+            knowledgeSources: data.knowledgeSources,
             width: data.width,
             height: data.height,
           },

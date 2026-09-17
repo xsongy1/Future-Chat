@@ -26,10 +26,10 @@
       "@/*": [
         "./*"
       ],
-      "@sky-monitor/sdk": [
+      "@xxxsongy/chat_monitor": [
         "./packages/sky-monitor/src/index.ts"
       ],
-      "@sky-monitor/sdk/*": [
+      "@xxxsongy/chat_monitor/*": [
         "./packages/sky-monitor/src/*"
       ]
     }

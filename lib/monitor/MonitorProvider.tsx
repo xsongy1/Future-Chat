@@ -8,11 +8,11 @@
 
 import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { getMonitor } from './index'
-import { useDebugSubscription } from '@sky-monitor/sdk/debug'
+import { useDebugSubscription } from '@xxxsongy/chat_monitor/debug'
 
 // 懒加载 DebugPanel（仅开发环境）
 const DebugPanel = lazy(() =>
-  import('@sky-monitor/sdk/debug').then((m) => ({ default: m.DebugPanel }))
+  import('@xxxsongy/chat_monitor/debug').then((m) => ({ default: m.DebugPanel }))
 )
 
 interface MonitorProviderProps {

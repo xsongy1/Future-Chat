@@ -14,6 +14,9 @@ export type AuditAction =
   | 'auth.login'
   | 'auth.logout'
   | 'auth.link_account'
+  | 'knowledge.create'
+  | 'knowledge.upload'
+  | 'knowledge.delete'
 
 interface CreateAuditLogParams {
   userId: string

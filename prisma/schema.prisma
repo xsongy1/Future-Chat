@@ -9,18 +9,19 @@ datasource db {
 }
 
 model User {
-  id            String         @id @default(cuid())
-  username      String?        @unique
-  password      String?
-  email         String?        @unique
-  emailVerified DateTime?
-  name          String?
-  image         String?
-  apiKey        String?
-  createdAt     DateTime       @default(now())
-  conversations Conversation[]
-  accounts      Account[]
-  sessions      Session[]
+  id             String          @id @default(cuid())
+  username       String?         @unique
+  password       String?
+  email          String?         @unique
+  emailVerified  DateTime?
+  name           String?
+  image          String?
+  apiKey         String?
+  createdAt      DateTime        @default(now())
+  conversations  Conversation[]
+  accounts       Account[]
+  sessions       Session[]
+  knowledgeBases KnowledgeBase[]
   
   @@index([email])
 }
@@ -144,4 +145,50 @@ model MonitorEvent {
   @@index([sessionId, timestamp])
   @@index([traceId])
   @@index([appId, timestamp])
+}
+
+// ============ RAG 私有知识库 ============
+// 检索结果是 knowledge_search 工具的返回内容，向量以 Float[]（PostgreSQL double precision[]）
+// 存储，相似度在应用层计算（见 server/services/rag/）。当前库无 pgvector 扩展，
+// 故不使用 vector 类型；规模增长后可迁移到 pgvector，chunk 表结构无需改动。
+
+model KnowledgeBase {
+  id          String              @id @default(cuid())
+  name        String
+  description String?
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents   KnowledgeDocument[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([userId, updatedAt(sort: Desc)])
+}
+
+model KnowledgeDocument {
+  id              String          @id @default(cuid())
+  knowledgeBaseId String
+  knowledgeBase   KnowledgeBase   @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  name            String
+  type            String // 'txt' | 'md'（与 /api/upload 支持的扩展名一致）
+  size            Int
+  status          String          @default("ready") // ready | failed
+  error           String?         @db.Text
+  chunkCount      Int             @default(0)
+  createdAt       DateTime        @default(now())
+  chunks          DocumentChunk[]
+
+  @@index([knowledgeBaseId, createdAt])
+}
+
+model DocumentChunk {
+  id         String            @id @default(cuid())
+  documentId String
+  document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  index      Int // 文档内序号，用于展示与去重
+  content    String            @db.Text
+  embedding  Float[] // 与 EMBEDDING_MODELS[].dimensions 对应
+  createdAt  DateTime          @default(now())
+
+  @@index([documentId, index])
 }

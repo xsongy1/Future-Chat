@@ -1,8 +1,6 @@
 # Sky Chat Docker Compose 配置
 # 包含 PostgreSQL 数据库和 Next.js 应用
 
-version: '3.8'
-
 services:
   # PostgreSQL 数据库
   postgres:
@@ -36,8 +34,10 @@ services:
       DATABASE_URL: "postgresql://skychat:password123@postgres:5432/skychat"
       NODE_ENV: production
     env_file:
-      - .env
-      - .env.production
+      - path: .env
+        required: true
+      - path: .env.production
+        required: false
     volumes:
       - ./generated:/app/public/generated
     depends_on:

@@ -18,6 +18,7 @@ const eslintConfig = [
       'build/**',
       'next-env.d.ts',
       'types/next-auth.d.ts',
+      'packages/sky-monitor/dist/**',
     ],
   },
   {

@@ -17,7 +17,7 @@ import { createChatCompletion } from '@/server/services/ai/siliconflow'
 import { getDefaultModel } from '@/shared/constants/models'
 import { buildContextMessages, appendAttachments } from './prompt.builder'
 import { createSSEStream, createSSEStreamWithTools } from './stream.handler'
-import { toolRegistry, ensureToolsReady } from '@/server/services/tools'
+import { toolRegistry, ensureToolsReady, type Tool } from '@/server/services/tools'
 
 
 export interface ChatRequest {
@@ -27,6 +27,10 @@ export interface ChatRequest {
   enableThinking?: boolean
   thinkingBudget?: number
   enableWebSearch?: boolean
+  /** 是否启用私有知识库检索（knowledge_search 工具） */
+  enableKnowledgeBase?: boolean
+  /** 用户在输入框选择的知识库 ID；不传则检索该用户全部知识库 */
+  knowledgeBaseId?: string
   enableImageGeneration?: boolean
   imageConfig?: { prompt: string; negative_prompt?: string; image_size: string }
   userMessageId?: string
@@ -66,6 +70,8 @@ export async function handleChatRequest(
     enableThinking = false,
     thinkingBudget = 4096,
     enableWebSearch = false,
+    enableKnowledgeBase = false,
+    knowledgeBaseId,
     enableImageGeneration: _enableImageGeneration = false,
     userMessageId,
     aiMessageId,
@@ -84,10 +90,18 @@ export async function handleChatRequest(
 
   // 4. 准备工具定义
   // - web_search: 需要用户手动开启
+  // - knowledge_search: 需要用户手动开启（与 web_search 同一模式）
   // - generate_image: 始终可用（AI 自动判断何时调用）
-  const enabledTools = []
+  //
+  // enabledTools 同时承担两个职责，且必须贯穿整个多轮 Tool Calling：
+  //   1) 每轮请求给模型看的 tools（不是只有第一轮）
+  //   2) 工具执行前的白名单校验（防止模型点名一个本轮未启用的工具）
+  const enabledTools: Tool[] = []
   if (enableWebSearch && toolRegistry.has('web_search')) {
     enabledTools.push(toolRegistry.get('web_search')!)
+  }
+  if (enableKnowledgeBase && toolRegistry.has('knowledge_search')) {
+    enabledTools.push(toolRegistry.get('knowledge_search')!)
   }
   // 生图工具始终可用，让 AI 自己判断何时调用
   const imageAvailable = toolRegistry.has('generate_image')
@@ -143,6 +157,9 @@ export async function handleChatRequest(
         enableThinking,
         thinkingBudget,
         cancelSignal: signal,
+        // 本次请求允许的工具集合：多轮循环里每轮都用它下发，并在执行前做白名单校验
+        allowedTools: enabledTools,
+        knowledgeBaseId,
       })
     : createSSEStream(reader, {
         messageId,

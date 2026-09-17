@@ -91,6 +91,23 @@ export interface SearchSource {
 }
 
 /**
+ * 知识库来源（RAG）
+ *
+ * 刻意不复用 SearchSource：知识库来源是本地文件而非 URL，
+ * 而 web_search 的展示组件会对 source.url 调用 new URL()，复用会直接报错。
+ */
+export interface KnowledgeSource {
+  /** 文档名 */
+  documentName: string
+  /** 文档内片段序号 */
+  chunkIndex: number
+  /** 余弦相似度（0-1） */
+  score: number
+  /** 内容摘要 */
+  snippet: string
+}
+
+/**
  * 工具执行结果
  * @description 存储工具调用的执行结果，用于持久化
  */
@@ -109,6 +126,8 @@ export interface ToolResult {
     resultCount?: number
     /** 搜索来源列表 */
     sources?: SearchSource[]
+    /** 知识库来源列表（knowledge_search） */
+    knowledgeSources?: KnowledgeSource[]
     /** 其他数据 */
     [key: string]: unknown
   }
@@ -147,6 +166,7 @@ export interface ToolInvocation {
     imageUrl?: string
     resultCount?: number
     sources?: SearchSource[]
+    knowledgeSources?: KnowledgeSource[]
     [key: string]: unknown
   }
 }
@@ -272,6 +292,8 @@ export interface SSEData {
   height?: number
   /** 搜索来源列表（web_search tool_result 事件） */
   sources?: SearchSource[]
+  /** 知识库来源列表（knowledge_search tool_result 事件） */
+  knowledgeSources?: KnowledgeSource[]
   /** 预估剩余时间（秒，tool_progress 事件） */
   estimatedTime?: number
   /** 是否被取消（tool_result 事件） */

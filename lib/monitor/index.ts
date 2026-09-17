@@ -1,7 +1,7 @@
 /**
  * Monitor 单例模块（纯装配层）
  *
- * 只做一件事：用新 SDK（@sky-monitor/sdk）组装插件，提供全局唯一实例。
+ * 只做一件事：用新 SDK（@xxxsongy/chat_monitor）组装插件，提供全局唯一实例。
  * Trace/Session 已是 SDK 核心一等 API，不再需要任何兼容层。
  *
  * 实例挂载在 globalThis 上：埋点 SDK 本质是页面级单例（trace-helper / debug hooks
@@ -23,8 +23,8 @@ import {
   DebugPlugin,
   BrowserStorage,
   BrowserTransport,
-} from '@sky-monitor/sdk'
-import type { Monitor as MonitorInstance } from '@sky-monitor/sdk'
+} from '@xxxsongy/chat_monitor'
+import type { Monitor as MonitorInstance } from '@xxxsongy/chat_monitor'
 
 // 单例挂载点：跨模块重求值（HMR）复用同一实例，避免多实例
 const GLOBAL_KEY = '__SKY_MONITOR__'

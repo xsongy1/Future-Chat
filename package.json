@@ -42,7 +42,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@radix-ui/react-tooltip": "^1.2.8",
-    "@sky-monitor/sdk": "workspace:*",
+    "@xxxsongy/chat_monitor": "workspace:*",
     "@tanstack/react-virtual": "^3.13.12",
     "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",

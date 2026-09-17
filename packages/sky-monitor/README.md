@@ -1,4 +1,4 @@
-# @sky-monitor/sdk
+# @xxxsongy/chat_monitor
 
 轻量级 AI 应用监控 SDK（工作区包）。核心 gzip ≈ 1.4KB（tree-shaking 后），面向 LLM 对话场景：
 
@@ -8,7 +8,7 @@
 - **网络监控**：fetch / XHR 拦截，请求耗时与状态
 - **智能上报**：批处理（10 条/5s）+ 关键事件直发 + 指数退避重试 + 离线持久化（断网补发）
 - **采样**：random / session 模式、按类型采样率、关键事件永远 100%
-- **调试面板**（`@sky-monitor/sdk/debug`，仅开发环境）：事件流 / Trace / 性能 / 网络 / 会话 / 队列实时可视化
+- **调试面板**（`@xxxsongy/chat_monitor/debug`，仅开发环境）：事件流 / Trace / 性能 / 网络 / 会话 / 队列实时可视化
 
 ## 架构
 
@@ -25,13 +25,13 @@
 
 ```bash
 # 工作区内（推荐）：packages/sky-monitor 已在 pnpm-workspace.yaml 中
-pnpm add @sky-monitor/sdk
+pnpm add @xxxsongy/chat_monitor
 
 # 或作为独立包发布后
-npm install @sky-monitor/sdk
+npm install @xxxsongy/chat_monitor
 ```
 
-> Next.js 用户：确认 `tsconfig.json` 有路径映射，或 `next.config.ts` 配 `transpilePackages: ['@sky-monitor/sdk']`（本仓库两种都已配好）。
+> Next.js 用户：确认 `tsconfig.json` 有路径映射，或 `next.config.ts` 配 `transpilePackages: ['@xxxsongy/chat_monitor']`（本仓库两种都已配好）。
 
 ## 2. 初始化（单例 + 插件装配）
 
@@ -42,7 +42,7 @@ import {
   Monitor, ErrorPlugin, PerformancePlugin, NetworkPlugin,
   DedupePlugin, SamplingPlugin, TransportPlugin, DebugPlugin,
   BrowserStorage, BrowserTransport,
-} from '@sky-monitor/sdk'
+} from '@xxxsongy/chat_monitor'
 
 const isDev = process.env.NODE_ENV === 'development'
 
@@ -153,7 +153,7 @@ React 场景用 `MonitorProvider` 管理生命周期（本项目 `lib/monitor/Mo
 
 ```tsx
 // React 应用中（懒加载 + 仅 dev）
-import { DebugPanel, useDebugSubscription } from '@sky-monitor/sdk/debug'
+import { DebugPanel, useDebugSubscription } from '@xxxsongy/chat_monitor/debug'
 
 function App() {
   const { status, error } = useDebugSubscription()

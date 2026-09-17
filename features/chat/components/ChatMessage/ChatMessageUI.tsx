@@ -13,11 +13,11 @@ import { MessageContent } from '@/features/chat/components/MessageContent'
 import { MessageActions } from '@/features/chat/components/MessageActions'
 import { MessageEdit } from '@/features/chat/components/MessageEdit'
 import { Button } from '@/components/ui/button'
-import { Loader2, Edit2, RotateCw, ChevronDown, ChevronRight, Globe, XCircle } from 'lucide-react'
+import { Loader2, Edit2, RotateCw, ChevronDown, ChevronRight, Globe, XCircle, BookOpen, FileText } from 'lucide-react'
 import { MarkdownIcon } from '@/components/icons/MarkdownIcon'
 import { TextFileIcon } from '@/components/icons/TextFileIcon'
 import { cn } from '@/lib/utils'
-import type { Message, ToolInvocation, ToolResult, SearchSource } from '@/features/chat/types/chat'
+import type { Message, ToolInvocation, ToolResult, SearchSource, KnowledgeSource } from '@/features/chat/types/chat'
 import type { MessagePhase } from '@/features/chat/types/message-state'
 
 /**
@@ -102,6 +102,86 @@ function WebSearchStatus({ invocation }: { invocation: ToolInvocation }) {
 }
 
 /**
+ * 知识库检索状态组件（RAG）
+ *
+ * 来源是文件而不是 URL，所以单独渲染成文件名标签，
+ * 不复用 WebSearchStatus（那边会对 url 调 new URL()）。
+ */
+function KnowledgeSearchStatus({ invocation }: { invocation: ToolInvocation }) {
+  const sources = invocation.result?.knowledgeSources as KnowledgeSource[] | undefined
+
+  // 检索中
+  if (invocation.state === 'running' || invocation.state === 'pending') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        <span>正在查询知识库...</span>
+        {invocation.args?.query && (
+          <span className="text-xs opacity-70">&quot;{invocation.args.query}&quot;</span>
+        )}
+      </div>
+    )
+  }
+
+  // 失败
+  if (invocation.state === 'failed') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <XCircle className="h-3.5 w-3.5" />
+        <span>知识库检索失败</span>
+      </div>
+    )
+  }
+
+  // 已取消
+  if (invocation.state === 'cancelled') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <XCircle className="h-3.5 w-3.5" />
+        <span>知识库检索已取消</span>
+      </div>
+    )
+  }
+
+  // 完成
+  const resultCount = invocation.result?.resultCount ?? 0
+  const hasSources = !!sources && sources.length > 0
+
+  // 同一文档可能命中多个片段，按文件名去重后展示
+  const uniqueDocuments = hasSources
+    ? Array.from(new Set(sources!.map((s) => s.documentName)))
+    : []
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <BookOpen className="h-3.5 w-3.5" />
+        <span>
+          {hasSources
+            ? `已检索 ${resultCount} 个知识片段`
+            : '知识库中未找到相关内容'}
+        </span>
+      </div>
+
+      {uniqueDocuments.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs text-muted-foreground">来源:</span>
+          {uniqueDocuments.map((name, index) => (
+            <span
+              key={index}
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted/50 text-xs"
+            >
+              <FileText className="h-3 w-3 text-muted-foreground" />
+              <span className="text-foreground/80 max-w-[160px] truncate">{name}</span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * 渲染单个工具调用
  * 图片生成完成后会直接插入到 content 流中，这里只显示 loading 状态
  */
@@ -179,6 +259,11 @@ function ToolInvocationItem({
     return <WebSearchStatus invocation={invocation} />
   }
 
+  // 知识库检索工具
+  if (invocation.name === 'knowledge_search') {
+    return <KnowledgeSearchStatus invocation={invocation} />
+  }
+
   return null
 }
 
@@ -192,6 +277,24 @@ function ToolResultItem({ result }: { result: ToolResult }) {
   // 图片生成结果不在这里渲染，会在 content 的 markdown 中显示
   if (result.name === 'generate_image') {
     return null
+  }
+
+  // 知识库检索结果（历史消息：toolInvocations 为空时走这里，从 toolResults 还原展示）
+  if (result.name === 'knowledge_search') {
+    return (
+      <KnowledgeSearchStatus
+        invocation={{
+          toolCallId: result.toolCallId,
+          name: result.name,
+          state: result.result.cancelled
+            ? 'cancelled'
+            : result.result.success
+              ? 'completed'
+              : 'failed',
+          result: result.result,
+        }}
+      />
+    )
   }
 
   // 搜索结果 - 简洁的来源标签

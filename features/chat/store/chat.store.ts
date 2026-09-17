@@ -43,6 +43,12 @@ interface ChatState {
   selectedModel: string
   enableThinking: boolean
   enableWebSearch: boolean
+  /** 是否启用私有知识库检索（knowledge_search 工具） */
+  enableKnowledgeBase: boolean
+  /** 当前选中的知识库 ID；null = 检索该用户全部知识库 */
+  selectedKnowledgeBaseId: string | null
+  /** 当前选中知识库的名称（仅用于输入框展示，避免为了一个标签再去请求列表） */
+  selectedKnowledgeBaseName: string | null
 }
 
 interface ChatActions {
@@ -84,6 +90,12 @@ interface ChatActions {
   setModel: (modelId: string) => void
   toggleThinking: (enabled: boolean) => void
   toggleWebSearch: (enabled: boolean) => void
+  toggleKnowledgeBase: (enabled: boolean) => void
+  /**
+   * 选择要检索的知识库；传 null 表示检索全部知识库。
+   * 选中某个知识库时会顺带把「私有知识库」开关打开（用户意图很明确）。
+   */
+  setSelectedKnowledgeBase: (id: string | null, name?: string | null) => void
 
   // 重置
   reset: () => void
@@ -106,6 +118,30 @@ const getInitialWebSearch = (): boolean => {
   return false
 }
 
+const getInitialKnowledgeBase = (): boolean => {
+  if (typeof window === 'undefined') return false
+  try {
+    return StorageManager.get<boolean>(STORAGE_KEYS.USER.ENABLE_KNOWLEDGE_BASE) ?? false
+  } catch {}
+  return false
+}
+
+const getInitialKnowledgeBaseId = (): string | null => {
+  if (typeof window === 'undefined') return null
+  try {
+    return StorageManager.get<string>(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE) ?? null
+  } catch {}
+  return null
+}
+
+const getInitialKnowledgeBaseName = (): string | null => {
+  if (typeof window === 'undefined') return null
+  try {
+    return StorageManager.get<string>(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE_NAME) ?? null
+  } catch {}
+  return null
+}
+
 const initialState: ChatState = {
   messages: [],
   messageCache: new Map(),
@@ -120,6 +156,9 @@ const initialState: ChatState = {
   selectedModel: getInitialModel(),
   enableThinking: false,
   enableWebSearch: getInitialWebSearch(),
+  enableKnowledgeBase: getInitialKnowledgeBase(),
+  selectedKnowledgeBaseId: getInitialKnowledgeBaseId(),
+  selectedKnowledgeBaseName: getInitialKnowledgeBaseName(),
 }
 
 export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
@@ -257,6 +296,32 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
       StorageManager.set(STORAGE_KEYS.USER.ENABLE_WEB_SEARCH, enabled)
     } catch {}
     set({ enableWebSearch: enabled })
+  },
+
+  toggleKnowledgeBase: (enabled) => {
+    try {
+      StorageManager.set(STORAGE_KEYS.USER.ENABLE_KNOWLEDGE_BASE, enabled)
+    } catch {}
+    set({ enableKnowledgeBase: enabled })
+  },
+
+  setSelectedKnowledgeBase: (id, name = null) => {
+    try {
+      if (id) {
+        StorageManager.set(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE, id)
+        if (name) StorageManager.set(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE_NAME, name)
+      } else {
+        StorageManager.remove(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE)
+        StorageManager.remove(STORAGE_KEYS.USER.SELECTED_KNOWLEDGE_BASE_NAME)
+      }
+      // 选中具体知识库 = 想用它，顺手打开总开关，避免"选了却没生效"的困惑
+      if (id) StorageManager.set(STORAGE_KEYS.USER.ENABLE_KNOWLEDGE_BASE, true)
+    } catch {}
+    set(
+      id
+        ? { selectedKnowledgeBaseId: id, selectedKnowledgeBaseName: name, enableKnowledgeBase: true }
+        : { selectedKnowledgeBaseId: null, selectedKnowledgeBaseName: null }
+    )
   },
 
   // ===== 重置 =====

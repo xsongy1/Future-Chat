@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react'
-import { ArrowUp, Mic, Loader2, Brain, Square, X, FileUp, Paintbrush, Search } from 'lucide-react'
+import { ArrowUp, Mic, Loader2, Brain, Square, X, FileUp, Paintbrush, Search, BookOpen, ChevronDown } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { MarkdownIcon } from '@/components/icons/MarkdownIcon'
@@ -28,6 +28,9 @@ interface ChatInputUIProps {
   selectedModel: string
   enableThinking: boolean
   enableWebSearch: boolean
+  enableKnowledgeBase: boolean
+  /** 当前选中的知识库名称（null = 全部知识库），用于在输入框展示当前检索范围 */
+  selectedKnowledgeBaseName: string | null
   isLoading: boolean
   isRecording: boolean
   isTranscribing: boolean
@@ -39,6 +42,9 @@ interface ChatInputUIProps {
   _onModelChange?: (model: string) => void
   onThinkingToggle: (enabled: boolean) => void
   onWebSearchToggle: (enabled: boolean) => void
+  onKnowledgeBaseToggle: (enabled: boolean) => void
+  /** 打开知识库管理弹窗（新建 / 删除 / 选择 / 上传文档） */
+  onOpenKnowledgeBase: () => void
   onStartRecording: () => void
   onStopRecording: () => void
   onCancelRecording: () => void
@@ -58,6 +64,8 @@ export function ChatInputUI({
   selectedModel,
   enableThinking,
   enableWebSearch,
+  enableKnowledgeBase,
+  selectedKnowledgeBaseName,
   isLoading,
   isRecording,
   isTranscribing,
@@ -67,6 +75,8 @@ export function ChatInputUI({
   _onModelChange,
   onThinkingToggle,
   onWebSearchToggle,
+  onKnowledgeBaseToggle,
+  onOpenKnowledgeBase,
   onStartRecording,
   onStopRecording,
   onCancelRecording,
@@ -412,6 +422,64 @@ export function ChatInputUI({
                 </TooltipTrigger>
                 <TooltipContent>
                   <p>{enableWebSearch ? '关闭联网搜索' : '开启联网搜索'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* 私有知识库按钮 */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => onKnowledgeBaseToggle(!enableKnowledgeBase)}
+                    disabled={disabled}
+                    className={cn(
+                      'h-8 w-8 rounded-lg transition-all',
+                      enableKnowledgeBase
+                        ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                        : 'hover:bg-[hsl(var(--input-hover))] text-gray-600 dark:text-gray-400'
+                    )}
+                  >
+                    <BookOpen className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>{enableKnowledgeBase ? '关闭私有知识库' : '开启私有知识库'}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+
+            {/* 知识库选择器：展示当前检索范围，点击进入管理（新建/删除/选择/上传文档） */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={onOpenKnowledgeBase}
+                    disabled={disabled}
+                    className={cn(
+                      'h-8 max-w-[160px] gap-1 rounded-lg px-2 text-xs font-normal transition-all',
+                      enableKnowledgeBase && selectedKnowledgeBaseName
+                        ? 'text-emerald-600 hover:bg-[hsl(var(--input-hover))] dark:text-emerald-400'
+                        : 'text-gray-600 hover:bg-[hsl(var(--input-hover))] dark:text-gray-400'
+                    )}
+                  >
+                    <span className="truncate">
+                      {selectedKnowledgeBaseName || '选择知识库'}
+                    </span>
+                    <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    {selectedKnowledgeBaseName
+                      ? `当前检索范围：${selectedKnowledgeBaseName}（点击管理）`
+                      : '选择知识库 / 新建 / 上传文档'}
+                  </p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>

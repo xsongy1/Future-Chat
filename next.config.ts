@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   output: 'standalone',
 
   // 工作区 SDK 包直接编译 TS 源码
-  transpilePackages: ['@sky-monitor/sdk'],
+  transpilePackages: ['@xxxsongy/chat_monitor'],
 
   images: {
     remotePatterns: [

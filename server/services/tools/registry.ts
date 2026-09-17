@@ -4,7 +4,12 @@
  * 管理所有可用工具的注册、查找和执行
  */
 
-import type { Tool, IToolRegistry, OpenAIToolDefinition } from './types'
+import type {
+  Tool,
+  IToolRegistry,
+  OpenAIToolDefinition,
+  ToolExecutionContext,
+} from './types'
 
 /**
  * 验证工具定义是否完整
@@ -82,11 +87,15 @@ export class ToolRegistry implements IToolRegistry {
 
   /**
    * 按名称执行工具
+   *
+   * @param context - 执行上下文（当前登录用户）。需要归属校验的工具必须依赖它，
+   *                  不作为工具参数从模型侧传入，避免越权。
    */
   async executeByName(
     name: string,
     args: Record<string, unknown>,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    context?: ToolExecutionContext
   ): Promise<string> {
     const tool = this.get(name)
     
@@ -95,7 +104,7 @@ export class ToolRegistry implements IToolRegistry {
     }
     
     try {
-      return await tool.execute(args, signal)
+      return await tool.execute(args, signal, context)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
       console.error(`[ToolRegistry] Error executing tool "${name}":`, message)

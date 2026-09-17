@@ -23,6 +23,17 @@ export function formatToolMessage(result: ToolCallResult): ToolMessage {
     }
   }
 
+  // 知识库检索结果：同样只把 content 给 AI
+  // （sources / resultCount 是给前端展示用的，不必占用上下文）
+  if (result.name === 'knowledge_search') {
+    try {
+      const parsed = JSON.parse(result.content)
+      content = parsed.content || parsed.error || result.content
+    } catch {
+      // 不是 JSON，保持原样
+    }
+  }
+
   // 图片生成结果：只给 AI 简短消息
   if (result.name === 'generate_image') {
     try {
