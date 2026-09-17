@@ -7,7 +7,7 @@
  * - alwaysSample：关键事件（如错误）永远 100% 采样
  */
 
-import type { MonitorEvent, Plugin } from '../core/types.js'
+import type { MonitorEvent, Plugin } from '../core/types'
 
 export type SamplingMode = 'random' | 'session'
 

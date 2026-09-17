@@ -8,10 +8,10 @@
  * - 上下文注入：sessionId / traceId 自动写入事件 context
  */
 
-import type { MonitorContext, MonitorEvent, MonitorOptions, Plugin, TraceOptions } from './types.js'
-import { Trace } from './trace.js'
-import { Session } from './session.js'
-import { generateEventId } from './ids.js'
+import type { MonitorContext, MonitorEvent, MonitorOptions, Plugin, TraceOptions } from './types'
+import { Trace } from './trace'
+import { Session } from './session'
+import { generateEventId } from './ids'
 
 export class Monitor {
   readonly appId: string

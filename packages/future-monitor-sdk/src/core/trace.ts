@@ -13,9 +13,9 @@
  * - 吞吐指标（chunksPerSec / tokensPerSec）
  */
 
-import type { TokenUsage, ToolResult, TraceError, TraceOptions } from './types.js'
-import { generateTraceId } from './ids.js'
-import { estimateCost } from './cost.js'
+import type { TokenUsage, ToolResult, TraceError, TraceOptions } from './types'
+import { generateTraceId } from './ids'
+import { estimateCost } from './cost'
 
 export type TraceState = 'active' | 'completed' | 'error' | 'aborted'
 

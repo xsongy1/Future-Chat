@@ -5,8 +5,8 @@
  * 产出 http_request 事件。支持 includeUrls / excludeUrls 过滤。
  */
 
-import type { MonitorEvent, Plugin } from '../core/types.js'
-import type { Monitor } from '../core/monitor.js'
+import type { MonitorEvent, Plugin } from '../core/types'
+import type { Monitor } from '../core/monitor'
 
 export interface NetworkPluginOptions {
   /** 只采集匹配的 URL（默认全部） */

@@ -9,10 +9,10 @@
  * - 状态可观测：getQueueStatus / flushQueue / clearQueue 供调试面板使用
  */
 
-import type { IStorage, ITransport } from '../core/storage.js'
-import type { MonitorEvent, Plugin } from '../core/types.js'
-import type { Monitor } from '../core/monitor.js'
-import { BrowserTransport } from '../core/storage.js'
+import type { IStorage, ITransport } from '../core/storage'
+import type { MonitorEvent, Plugin } from '../core/types'
+import type { Monitor } from '../core/monitor'
+import { BrowserTransport } from '../core/storage'
 
 export type TransportMode = 'immediate' | 'batch'
 
