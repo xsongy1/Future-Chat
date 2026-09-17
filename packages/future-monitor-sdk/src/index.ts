@@ -8,12 +8,12 @@
  */
 
 // 核心
-export { Monitor } from './core/monitor'
-export { Trace } from './core/trace'
-export { Session } from './core/session'
-export { BrowserStorage, BrowserTransport } from './core/storage'
-export { generateEventId, generateTraceId, generateSessionId, generateToolCallId } from './core/ids'
-export { estimateCost, getModelPrice, MODEL_PRICES } from './core/cost'
+export { Monitor } from './core/monitor.js'
+export { Trace } from './core/trace.js'
+export { Session } from './core/session.js'
+export { BrowserStorage, BrowserTransport } from './core/storage.js'
+export { generateEventId, generateTraceId, generateSessionId, generateToolCallId } from './core/ids.js'
+export { estimateCost, getModelPrice, MODEL_PRICES } from './core/cost.js'
 
 // 类型
 export type {
@@ -26,24 +26,24 @@ export type {
   ToolResult,
   TraceError,
   TraceOptions,
-} from './core/types'
-export type { CostEstimate, ModelPrice } from './core/cost'
-export type { TraceState, TraceEmitFn } from './core/trace'
-export type { SessionStats } from './core/session'
-export type { IStorage, ITransport, BrowserTransportOptions } from './core/storage'
+} from './core/types.js'
+export type { CostEstimate, ModelPrice } from './core/cost.js'
+export type { TraceState, TraceEmitFn } from './core/trace.js'
+export type { SessionStats } from './core/session.js'
+export type { IStorage, ITransport, BrowserTransportOptions } from './core/storage.js'
 
 // 插件
-export { DedupePlugin } from './plugins/dedupe'
-export type { DedupePluginOptions } from './plugins/dedupe'
-export { SamplingPlugin } from './plugins/sampling'
-export type { SamplingMode, SamplingPluginOptions } from './plugins/sampling'
-export { ErrorPlugin } from './plugins/error'
-export type { ErrorPluginOptions } from './plugins/error'
-export { PerformancePlugin } from './plugins/performance'
-export type { PerformancePluginOptions } from './plugins/performance'
-export { NetworkPlugin } from './plugins/network'
-export type { NetworkPluginOptions } from './plugins/network'
-export { TransportPlugin } from './plugins/transport'
-export type { TransportMode, TransportPluginOptions } from './plugins/transport'
-export { DebugPlugin } from './plugins/debug'
-export type { DebugPluginOptions } from './plugins/debug'
+export { DedupePlugin } from './plugins/dedupe.js'
+export type { DedupePluginOptions } from './plugins/dedupe.js'
+export { SamplingPlugin } from './plugins/sampling.js'
+export type { SamplingMode, SamplingPluginOptions } from './plugins/sampling.js'
+export { ErrorPlugin } from './plugins/error.js'
+export type { ErrorPluginOptions } from './plugins/error.js'
+export { PerformancePlugin } from './plugins/performance.js'
+export type { PerformancePluginOptions } from './plugins/performance.js'
+export { NetworkPlugin } from './plugins/network.js'
+export type { NetworkPluginOptions } from './plugins/network.js'
+export { TransportPlugin } from './plugins/transport.js'
+export type { TransportMode, TransportPluginOptions } from './plugins/transport.js'
+export { DebugPlugin } from './plugins/debug.js'
+export type { DebugPluginOptions } from './plugins/debug.js'

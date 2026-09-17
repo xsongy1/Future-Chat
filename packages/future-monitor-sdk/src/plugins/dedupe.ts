@@ -9,7 +9,7 @@
  * 可通过 types 选项自定义需要去重的事件类型集合。
  */
 
-import type { MonitorEvent, Plugin } from '../core/types'
+import type { MonitorEvent, Plugin } from '../core/types.js'
 
 export interface DedupePluginOptions {
   /** 去重窗口（ms），默认 5000 */

@@ -5,7 +5,7 @@
  * 结束时随 session_end 事件上报。
  */
 
-import { generateSessionId } from './ids'
+import { generateSessionId } from './ids.js'
 
 export interface SessionStats {
   sessionId: string

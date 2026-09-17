@@ -2,7 +2,7 @@
  * Future-monitor-sdk 核心类型定义
  */
 
-import type { Monitor } from './monitor'
+import type { Monitor } from './monitor.js'
 
 /** 事件上下文：随事件一起上报的公共维度 */
 export interface MonitorContext {

@@ -5,7 +5,7 @@
  * 便于扩展 Node / 小程序等平台，也便于单测注入 mock。
  */
 
-import type { MonitorEvent } from './types'
+import type { MonitorEvent } from './types.js'
 
 /** 键值存储抽象（离线队列持久化等） */
 export interface IStorage {

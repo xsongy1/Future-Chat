@@ -10,8 +10,8 @@
  * 支持忽略规则（ignoreErrors / ignoreUrls），并做窗口内快速去重。
  */
 
-import type { Plugin } from '../core/types'
-import type { Monitor } from '../core/monitor'
+import type { Plugin } from '../core/types.js'
+import type { Monitor } from '../core/monitor.js'
 
 export interface ErrorPluginOptions {
   /** 忽略的错误消息（正则） */

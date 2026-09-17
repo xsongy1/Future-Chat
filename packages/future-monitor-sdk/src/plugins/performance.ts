@@ -10,8 +10,8 @@
  *   页面隐藏时上报 final（符合 web-vitals 规范，避免事件风暴）
  */
 
-import type { MonitorEvent, Plugin } from '../core/types'
-import type { Monitor } from '../core/monitor'
+import type { MonitorEvent, Plugin } from '../core/types.js'
+import type { Monitor } from '../core/monitor.js'
 
 // Chrome 专有 API 类型补充（lib.dom 未收录）
 declare global {

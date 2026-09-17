@@ -7,8 +7,8 @@
  * 实例挂载在 window.__SKY_MONITOR_DEBUG__，供面板轮询发现。
  */
 
-import type { MonitorEvent, Plugin, TraceError } from '../core/types'
-import type { Monitor } from '../core/monitor'
+import type { MonitorEvent, Plugin, TraceError } from '../core/types.js'
+import type { Monitor } from '../core/monitor.js'
 
 export interface DebugPluginOptions {
   /** 内存中保留的最大事件数，默认 500 */
