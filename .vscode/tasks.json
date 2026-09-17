@@ -37,7 +37,7 @@
     {
       "label": "Docker 构建",
       "type": "shell",
-      "command": "docker build -t sky-chat .",
+      "command": "docker build -t future-chat .",
       "group": "build",
       "presentation": {
         "reveal": "always",

@@ -9,7 +9,7 @@ WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY prisma ./prisma/
-COPY packages/sky-monitor/package.json ./packages/sky-monitor/
+COPY packages/future-monitor-sdk/package.json ./packages/future-monitor-sdk/
 
 RUN pnpm install --frozen-lockfile
 

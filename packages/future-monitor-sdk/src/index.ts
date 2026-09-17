@@ -1,5 +1,5 @@
 /**
- * Sky Monitor SDK - 轻量级 AI 应用监控
+ * Future-monitor-sdk - 轻量级 AI 应用监控
  *
  * 插件化管道：采集（error/performance/network）→ 处理（dedupe/sampling/debug）→ 上报（transport）
  * Trace / Session 一等 API：SSE 链路追踪（TTFB/TTLB/阶段/工具调用/卡顿/重试）

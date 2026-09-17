@@ -1,7 +1,7 @@
 /**
- * Sky Monitor SDK - 调试面板子路径入口
+ * Future-monitor-sdk - 调试面板子路径入口
  *
- * 用法：import { DebugPanel, useDebugSubscription } from '@xxxsongy/chat_monitor/debug'
+ * 用法：import { DebugPanel, useDebugSubscription } from 'future-monitor-sdk/debug'
  * 仅开发环境使用；依赖 React / zustand（peer deps）与宿主设计系统（@/components/ui）。
  */
 

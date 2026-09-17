@@ -128,7 +128,7 @@ model Message {
 }
 
 
-// 监控事件表 - 存储 @sky-monitor/sdk 上报的埋点数据
+// 监控事件表 - 存储 future-monitor-sdk 上报的埋点数据
 // 维度字段（appId/sessionId/traceId）从 context 解析为独立列，便于聚合查询
 model MonitorEvent {
   id        String   @id // 事件 ID（SDK 生成，用于去重）

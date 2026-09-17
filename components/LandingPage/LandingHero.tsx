@@ -22,7 +22,7 @@ export function LandingHero() {
         {/* 主标题 */}
         <div className="space-y-4">
           <h1 className="text-6xl font-bold tracking-tight text-[hsl(var(--text-primary))]">
-            Sky Chat
+            Future-Chat
           </h1>
           <p className="text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
             新一代 AI 对话助手，让智能对话变得简单而优雅

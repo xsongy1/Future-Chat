@@ -54,7 +54,7 @@ type ResolvedOptions = Omit<Required<TransportPluginOptions>, 'offlineStorage'> 
   offlineStorage: IStorage | null
 }
 
-const OFFLINE_STORAGE_KEY = 'sky-monitor:transport:offline'
+const OFFLINE_STORAGE_KEY = 'future-monitor-sdk:transport:offline'
 const DEFAULT_CRITICAL_TYPES = ['sse_error', 'js_error', 'promise_error']
 
 export class TransportPlugin implements Plugin {

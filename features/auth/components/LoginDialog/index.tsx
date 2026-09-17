@@ -171,7 +171,7 @@ export function LoginDialog({ open, onOpenChange, onSuccess }: LoginDialogProps)
         onEscapeKeyDown={(e: KeyboardEvent) => onOpenChange ? undefined : e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle className="text-center text-2xl">Sky Chat</DialogTitle>
+          <DialogTitle className="text-center text-2xl">Future-Chat</DialogTitle>
           <DialogDescription className="text-center">
             请登录以继续使用
           </DialogDescription>

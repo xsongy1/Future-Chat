@@ -4,7 +4,7 @@
  * Landing Tutorial Component - 落地页新手教程（CSR）
  * 
  * Client Component - 交互式新手引导
- * 展示如何使用 Sky Chat 的基本步骤
+ * 展示如何使用 Future-Chat 的基本步骤
  * 
  * @module components/LandingPage/LandingTutorial
  */
@@ -21,7 +21,7 @@ interface TutorialStep {
 
 const tutorialSteps: TutorialStep[] = [
   {
-    title: '欢迎使用 Sky Chat',
+    title: '欢迎使用 Future-Chat',
     description: '一个简单、优雅、强大的 AI 对话助手。让我们用 30 秒了解如何使用它。',
     illustration: 'welcome',
   },
@@ -32,7 +32,7 @@ const tutorialSteps: TutorialStep[] = [
   },
   {
     title: '实时查看 AI 思考',
-    description: 'Sky Chat 会展示 AI 的推理过程，让你了解答案是如何产生的。',
+    description: 'Future-Chat 会展示 AI 的推理过程，让你了解答案是如何产生的。',
     illustration: 'thinking',
   },
   {

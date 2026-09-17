@@ -1,5 +1,5 @@
 /**
- * Sky Chat Logo Component
+ * Future-Chat Logo Component
  * 
  * 设计理念：
  * - 云朵形状代表"Sky"（天空）
@@ -7,12 +7,12 @@
  * - 渐变色从浅蓝到深蓝，象征天空的层次感
  * - 流畅的曲线体现 AI 的智能和流动性
  * 
- * @module components/icons/SkyLogo
+ * @module components/icons/FutureChatLogo
  */
 
 import * as React from 'react'
 
-interface SkyLogoProps {
+interface FutureChatLogoProps {
   /** 宽度 */
   width?: number
   /** 高度 */
@@ -24,14 +24,14 @@ interface SkyLogoProps {
 }
 
 /**
- * Sky Chat Logo 组件
+ * Future-Chat Logo 组件
  */
-export function SkyLogo({ 
+export function FutureChatLogo({ 
   width = 120, 
   height = 120, 
   className = '',
   showText = false 
-}: SkyLogoProps) {
+}: FutureChatLogoProps) {
   return (
     <svg
       width={width}
@@ -123,7 +123,7 @@ export function SkyLogo({
             fill="url(#skyGradient)"
             textAnchor="middle"
           >
-            Sky Chat
+            Future-Chat
           </text>
         </g>
       )}
@@ -132,13 +132,13 @@ export function SkyLogo({
 }
 
 /**
- * Sky Chat Logo Icon - 简化版（用于小尺寸）
+ * Future-Chat Logo Icon - 简化版（用于小尺寸）
  */
-export function SkyLogoIcon({ 
+export function FutureChatLogoIcon({ 
   width = 32, 
   height = 32, 
   className = '' 
-}: Omit<SkyLogoProps, 'showText'>) {
+}: Omit<FutureChatLogoProps, 'showText'>) {
   return (
     <svg
       width={width}

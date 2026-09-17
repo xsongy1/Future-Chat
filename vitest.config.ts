@@ -11,7 +11,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: [
-      'packages/sky-monitor/tests/**/*.test.ts',
+      'packages/future-monitor-sdk/tests/**/*.test.ts',
       // 服务端纯逻辑测试（如 RAG chunker / retrieval）：不依赖 DB 与网络，可直接跑
       'server/**/__tests__/**/*.test.ts',
     ],

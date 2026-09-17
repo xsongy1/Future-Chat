@@ -7,8 +7,8 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { GeoChecker } from '@/components/GeoChecker'
 
 export const metadata: Metadata = {
-  title: 'Sky Chat',
-  description: 'AI 智能对话助手 - 基于硅基流动的智能聊天应用',
+  title: 'Future-Chat',
+  description: 'Future-Chat - AI 智能对话助手（硅基流动模型 + Tool Calling + 私有知识库）',
   icons: {
     icon: '/icon.svg',
   },

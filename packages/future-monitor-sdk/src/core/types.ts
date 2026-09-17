@@ -1,5 +1,5 @@
 /**
- * Sky Monitor SDK 核心类型定义
+ * Future-monitor-sdk 核心类型定义
  */
 
 import type { Monitor } from './monitor'

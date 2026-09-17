@@ -22,13 +22,13 @@ export async function generateMetadata({
 
   if (!conversation) {
     return {
-      title: '分享不存在 - Sky Chat',
+      title: '分享不存在 - Future-Chat',
       description: '该分享链接已失效或不存在',
     }
   }
 
   const description = `查看 ${conversation.user?.username || '用户'} 分享的对话：${conversation.title}`
-  const title = `${conversation.title} - Sky Chat 分享`
+  const title = `${conversation.title} - Future-Chat 分享`
 
   return {
     title,
@@ -39,7 +39,7 @@ export async function generateMetadata({
       type: 'article',
       publishedTime: conversation.sharedAt?.toISOString(),
       authors: [conversation.user?.username || '匿名用户'],
-      siteName: 'Sky Chat',
+      siteName: 'Future-Chat',
       locale: 'zh_CN',
     },
     twitter: {

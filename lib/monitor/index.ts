@@ -1,7 +1,7 @@
 /**
  * Monitor 单例模块（纯装配层）
  *
- * 只做一件事：用新 SDK（@xxxsongy/chat_monitor）组装插件，提供全局唯一实例。
+ * 只做一件事：用新 SDK（future-monitor-sdk）组装插件，提供全局唯一实例。
  * Trace/Session 已是 SDK 核心一等 API，不再需要任何兼容层。
  *
  * 实例挂载在 globalThis 上：埋点 SDK 本质是页面级单例（trace-helper / debug hooks
@@ -23,11 +23,11 @@ import {
   DebugPlugin,
   BrowserStorage,
   BrowserTransport,
-} from '@xxxsongy/chat_monitor'
-import type { Monitor as MonitorInstance } from '@xxxsongy/chat_monitor'
+} from 'future-monitor-sdk'
+import type { Monitor as MonitorInstance } from 'future-monitor-sdk'
 
 // 单例挂载点：跨模块重求值（HMR）复用同一实例，避免多实例
-const GLOBAL_KEY = '__SKY_MONITOR__'
+const GLOBAL_KEY = '__FUTURE_MONITOR__'
 const globalRef = globalThis as { [GLOBAL_KEY]?: MonitorInstance | null }
 
 let monitor: MonitorInstance | null = globalRef[GLOBAL_KEY] ?? null
@@ -44,7 +44,7 @@ function initMonitor(): MonitorInstance {
   const endpoint = '/api/monitor'
 
   const instance = new Monitor({
-    appId: 'sky-chat-app',
+    appId: 'future-chat',
     debug: isDev,
   })
 

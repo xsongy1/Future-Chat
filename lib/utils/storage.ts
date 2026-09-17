@@ -7,8 +7,8 @@
  * @module lib/utils/storage
  */
 
-const USER_DATA_PREFIX = 'sky-chat-user-'
-const UI_PREF_PREFIX = 'sky-chat-ui-'
+const USER_DATA_PREFIX = 'future-chat-user-'
+const UI_PREF_PREFIX = 'future-chat-ui-'
 
 /**
  * 存储键定义
@@ -129,7 +129,7 @@ export const StorageManager = {
 
   /**
    * 清空所有应用相关的存储数据
-   * 删除所有 sky-chat- 前缀的项（包括用户数据和 UI 偏好）
+   * 删除所有 future-chat- 前缀的项（包括用户数据和 UI 偏好）
    *
    * 使用场景：
    * - 重置应用
@@ -172,7 +172,7 @@ export const StorageManager = {
   /**
    * 获取完整的存储键
    * @param key - 存储键（如 'user-selected-model' 或 'ui-sidebar-collapsed'）
-   * @returns 完整的键（如 'sky-chat-user-selected-model'）
+   * @returns 完整的键（如 'future-chat-user-selected-model'）
    */
   getFullKey(key: string): string {
     if (key.startsWith('user-')) {
@@ -180,7 +180,7 @@ export const StorageManager = {
     } else if (key.startsWith('ui-')) {
       return `${UI_PREF_PREFIX}${key.replace('ui-', '')}`
     }
-    return `sky-chat-${key}`
+    return `future-chat-${key}`
   },
 }
 

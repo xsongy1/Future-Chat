@@ -183,7 +183,7 @@ describe('TransportPlugin 重试与离线', () => {
     monitor.track('a', {})
     await plugin.flush()
 
-    expect(storage!.dump()['sky-monitor:transport:offline']).toBeTruthy()
+    expect(storage!.dump()['future-monitor-sdk:transport:offline']).toBeTruthy()
 
     // 模拟页面刷新：用同一 storage 创建新实例
     const transport2 = new MockTransport(0)

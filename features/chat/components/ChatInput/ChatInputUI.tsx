@@ -556,7 +556,7 @@ export function ChatInputUI({
         
         {/* 免责声明 */}
         <p className="text-center text-xs text-[hsl(var(--text-secondary))] mt-3">
-          Sky Chat 可能会出错。请核实重要信息。
+          Future-Chat 可能会出错。请核实重要信息。
         </p>
       </div>
 

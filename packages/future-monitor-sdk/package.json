@@ -1,7 +1,7 @@
 {
-  "name": "@xxxsongy/chat_monitor",
+  "name": "future-monitor-sdk",
   "version": "1.0.0",
-  "description": "轻量级 AI 应用监控 SDK：插件管道 + SSE 链路追踪 + 结构化错误分类 + Token/成本 + 智能上报",
+  "description": "Future-monitor-sdk：轻量级 AI 应用监控 SDK（插件管道 + SSE 链路追踪 + 结构化错误分类 + Token/成本 + 智能上报）",
   "license": "MIT",
   "type": "module",
   "main": "./dist/cjs/index.js",

@@ -1,7 +1,7 @@
 /**
  * 监控事件上报 API
  *
- * 接收前端 @xxxsongy/chat_monitor 上报的埋点事件（单条或批量），
+ * 接收前端 future-monitor-sdk 上报的埋点事件（单条或批量），
  * 解析 context 中的维度字段（appId/sessionId/traceId）落库，
  * 便于按维度聚合查询。
  */

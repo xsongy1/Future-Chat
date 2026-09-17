@@ -19,7 +19,7 @@ interface RunningTool {
 
 type RunningToolsRegistry = Map<string, RunningTool>
 
-const GLOBAL_KEY = '__skyChatRunningTools__'
+const GLOBAL_KEY = '__futureChatRunningTools__'
 
 function getRegistry(): RunningToolsRegistry {
   const g = globalThis as Record<string, unknown>

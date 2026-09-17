@@ -1,22 +1,30 @@
-# Sky Chat Docker Compose 配置
+# Future-Chat Docker Compose 配置
 # 包含 PostgreSQL 数据库和 Next.js 应用
+#
+# 注意：这里显式固定了 compose 项目名（name:），而不是让它取目录名。
+# 原因是 postgres 的数据卷名字是 `${项目名}_postgres_data`：
+# 一旦项目名变化，compose 会认为这是一个全新项目并创建一个空数据卷，现有数据"看起来"就丢了。
+
+name: sky-chat
 
 services:
   # PostgreSQL 数据库
   postgres:
     image: postgres:16-alpine
-    container_name: sky-chat-postgres
+    container_name: future-chat-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: skychat
+      # 注意：POSTGRES_* 只在「数据卷为空、首次初始化」时生效。
+
+      POSTGRES_USER: future_chat
       POSTGRES_PASSWORD: password123
-      POSTGRES_DB: skychat
+      POSTGRES_DB: future_chat
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U skychat']
+      test: ['CMD-SHELL', 'pg_isready -U future_chat']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -26,12 +34,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: sky-chat-app
+    container_name: future-chat-app
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: "postgresql://skychat:password123@postgres:5432/skychat"
+      DATABASE_URL: "postgresql://future_chat:password123@postgres:5432/future_chat"
       NODE_ENV: production
     env_file:
       - path: .env

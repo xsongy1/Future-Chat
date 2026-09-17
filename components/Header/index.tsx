@@ -156,7 +156,7 @@ export function Header() {
       <Dialog open={aboutDialogOpen} onOpenChange={setAboutDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>关于 Sky Chat</DialogTitle>
+            <DialogTitle>关于 Future-Chat</DialogTitle>
             <DialogDescription>
               一个基于硅基流动 API 的智能对话应用
             </DialogDescription>

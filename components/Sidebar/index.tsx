@@ -19,7 +19,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useUIStore } from '@/lib/stores/ui.store'
 import { cn } from '@/lib/utils'
-import { SkyLogoIcon } from '@/components/icons/SkyLogo'
+import { FutureChatLogoIcon } from '@/components/icons/FutureChatLogo'
 
 interface SidebarProps {
   /** 子组件（如会话列表模块） */
@@ -52,10 +52,10 @@ export function Sidebar({ children, isLeader, className }: SidebarProps) {
           "flex items-center gap-2",
           collapsed && "justify-center"
         )}>
-          <SkyLogoIcon width={32} height={32} className="shrink-0" />
+          <FutureChatLogoIcon width={32} height={32} className="shrink-0" />
           {!collapsed && (
             <span className="font-semibold text-lg whitespace-nowrap bg-gradient-to-r from-[#60A5FA] to-[#2563EB] bg-clip-text text-transparent">
-              Sky Chat
+              Future-Chat
             </span>
           )}
         </div>

@@ -69,7 +69,7 @@ export class Monitor {
     }
 
     if (this.debug) {
-      console.debug(`[sky-monitor] ${type}`, event)
+      console.debug(`[future-monitor-sdk] ${type}`, event)
     }
 
     let current: MonitorEvent | null = event
@@ -81,7 +81,7 @@ export class Monitor {
         current = result
       } catch (error) {
         // 插件异常不能影响主流程
-        console.warn(`[sky-monitor] plugin "${plugin.name}" error:`, error)
+        console.warn(`[future-monitor-sdk] plugin "${plugin.name}" error:`, error)
       }
     }
     return current

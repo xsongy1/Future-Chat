@@ -7,7 +7,7 @@
 
 'use client'
 
-import type { TokenUsage, TraceError, ToolResult } from '@xxxsongy/chat_monitor'
+import type { TokenUsage, TraceError, ToolResult } from 'future-monitor-sdk'
 import { getMonitor } from './index'
 
 /**

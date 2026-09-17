@@ -9,8 +9,8 @@ const nextConfig: NextConfig = {
   // Docker 部署用 standalone 模式
   output: 'standalone',
 
-  // 工作区 SDK 包直接编译 TS 源码
-  transpilePackages: ['@xxxsongy/chat_monitor'],
+  // 工作区 SDK 包（Future-monitor-sdk）直接编译 TS 源码
+  transpilePackages: ['future-monitor-sdk'],
 
   images: {
     remotePatterns: [

@@ -12,7 +12,7 @@ export function ShareFooter() {
           {/* 左侧信息 */}
           <div className="text-center sm:text-left">
             <p className="text-sm text-muted-foreground">
-              由 <span className="font-medium">Sky Chat</span> 提供支持
+              由 <span className="font-medium">Future-Chat</span> 提供支持
             </p>
             <p className="text-xs text-muted-foreground">
               这是一个只读分享页面，原始对话可能已更新
@@ -28,11 +28,11 @@ export function ShareFooter() {
               rel="noopener noreferrer"
             >
               <Globe className="h-4 w-4" />
-              <span>访问 Sky Chat</span>
+              <span>访问 Future-Chat</span>
             </a>
             
             <a
-              href="https://github.com/cquptJerry0/Sky-Chat"
+              href="https://github.com/cquptJerry0/Future-Chat"
               className="flex items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
               target="_blank"
               rel="noopener noreferrer"

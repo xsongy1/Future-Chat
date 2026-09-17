@@ -73,7 +73,7 @@ interface DebugStore {
 }
 
 /** localStorage key */
-const POSITION_STORAGE_KEY = 'sky-monitor-debug-panel-position'
+const POSITION_STORAGE_KEY = 'future-monitor-sdk-debug-panel-position'
 
 /** 从 localStorage 读取位置 */
 function loadPosition(): { x: number; y: number } | null {
