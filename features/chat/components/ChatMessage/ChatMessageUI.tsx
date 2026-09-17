@@ -19,6 +19,7 @@ import { TextFileIcon } from '@/components/icons/TextFileIcon'
 import { cn } from '@/lib/utils'
 import type { Message, ToolInvocation, ToolResult, SearchSource, KnowledgeSource } from '@/features/chat/types/chat'
 import type { MessagePhase } from '@/features/chat/types/message-state'
+import { mergeKnowledgeInvocations, toKnowledgeInvocation } from '@/features/chat/utils/knowledge-invocations'
 
 /**
  * 搜索状态组件 - 简洁风格，类似 Perplexity
@@ -279,22 +280,10 @@ function ToolResultItem({ result }: { result: ToolResult }) {
     return null
   }
 
-  // 知识库检索结果（历史消息：toolInvocations 为空时走这里，从 toolResults 还原展示）
+  // 知识库检索结果不在这里渲染：已在消息级别合并成一块状态展示
+  // （见 mergeKnowledgeInvocations 与调用处的过滤）
   if (result.name === 'knowledge_search') {
-    return (
-      <KnowledgeSearchStatus
-        invocation={{
-          toolCallId: result.toolCallId,
-          name: result.name,
-          state: result.result.cancelled
-            ? 'cancelled'
-            : result.result.success
-              ? 'completed'
-              : 'failed',
-          result: result.result,
-        }}
-      />
-    )
+    return null
   }
 
   // 搜索结果 - 简洁的来源标签
@@ -384,6 +373,16 @@ export function ChatMessageUI({
   // 根据状态机计算显示状态
   const isStreaming = isProcessing
   const isStreamingAnswer = phase === 'answering'
+
+  // 知识库检索：运行时从 toolInvocations 取，历史消息从 toolResults 还原，
+  // 然后合并成一次展示（见 mergeKnowledgeInvocations 的说明）
+  const knowledgeInvocation = mergeKnowledgeInvocations(
+    message.toolInvocations?.length
+      ? message.toolInvocations.filter((invocation) => invocation.name === 'knowledge_search')
+      : (message.toolResults || [])
+          .filter((result) => result.name === 'knowledge_search')
+          .map((result) => toKnowledgeInvocation(result))
+  )
   
   // ============ 用户消息 ============
   if (isUser) {
@@ -489,20 +488,33 @@ export function ChatMessageUI({
             </div>
           )}
 
-          {/* 工具调用状态（运行时，支持多个并行） */}
-          {message.toolInvocations?.map((invocation) => (
-            <ToolInvocationItem 
-              key={invocation.toolCallId} 
-              invocation={invocation}
+          {/* 工具调用状态（运行时，支持多个并行）
+              知识库检索单独合并展示，避免"未找到"和"已检索到"同时出现 */}
+          {message.toolInvocations
+            ?.filter((invocation) => invocation.name !== 'knowledge_search')
+            .map((invocation) => (
+              <ToolInvocationItem
+                key={invocation.toolCallId}
+                invocation={invocation}
+                _messageId={messageId}
+                onCancel={onCancelTool}
+              />
+            ))}
+
+          {knowledgeInvocation && (
+            <ToolInvocationItem
+              key={knowledgeInvocation.toolCallId}
+              invocation={knowledgeInvocation}
               _messageId={messageId}
               onCancel={onCancelTool}
             />
-          ))}
+          )}
 
           {/* 工具执行结果（持久化后，从数据库加载） */}
-          {!message.toolInvocations?.length && message.toolResults?.map((result) => (
-            <ToolResultItem key={result.toolCallId} result={result} />
-          ))}
+          {!message.toolInvocations?.length &&
+            message.toolResults
+              ?.filter((result) => result.name !== 'knowledge_search')
+              .map((result) => <ToolResultItem key={result.toolCallId} result={result} />)}
 
           {/* Thinking 面板（独立组件，自己订阅状态） */}
           {message.thinking && (

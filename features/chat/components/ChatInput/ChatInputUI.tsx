@@ -452,37 +452,40 @@ export function ChatInputUI({
               </Tooltip>
             </TooltipProvider>
 
-            {/* 知识库选择器：展示当前检索范围，点击进入管理（新建/删除/选择/上传文档） */}
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    onClick={onOpenKnowledgeBase}
-                    disabled={disabled}
-                    className={cn(
-                      'h-8 max-w-[160px] gap-1 rounded-lg px-2 text-xs font-normal transition-all',
-                      enableKnowledgeBase && selectedKnowledgeBaseName
-                        ? 'text-emerald-600 hover:bg-[hsl(var(--input-hover))] dark:text-emerald-400'
-                        : 'text-gray-600 hover:bg-[hsl(var(--input-hover))] dark:text-gray-400'
-                    )}
-                  >
-                    <span className="truncate">
-                      {selectedKnowledgeBaseName || '选择知识库'}
-                    </span>
-                    <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  <p>
-                    {selectedKnowledgeBaseName
-                      ? `当前检索范围：${selectedKnowledgeBaseName}（点击管理）`
-                      : '选择知识库 / 新建 / 上传文档'}
-                  </p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            {/* 知识库选择器：只在「私有知识库」开启时出现，展示当前检索范围，
+                点击进入管理（新建/删除/选择/上传文档） */}
+            {enableKnowledgeBase && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={onOpenKnowledgeBase}
+                      disabled={disabled}
+                      className={cn(
+                        'h-8 max-w-[160px] gap-1 rounded-lg px-2 text-xs font-normal transition-all',
+                        selectedKnowledgeBaseName
+                          ? 'text-emerald-600 hover:bg-[hsl(var(--input-hover))] dark:text-emerald-400'
+                          : 'text-gray-600 hover:bg-[hsl(var(--input-hover))] dark:text-gray-400'
+                      )}
+                    >
+                      <span className="truncate">
+                        {selectedKnowledgeBaseName || '全部知识库'}
+                      </span>
+                      <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {selectedKnowledgeBaseName
+                        ? `当前检索范围：${selectedKnowledgeBaseName}（点击管理）`
+                        : '当前检索范围：全部知识库（点击管理）'}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
           </div>
           
           {/* 右侧操作 */}

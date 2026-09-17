@@ -73,16 +73,27 @@ export function AuthGuard({
     }
   }, [isLoading, isAuthenticated, redirectTo, hasRedirected, router])
 
-  // 正在加载认证状态 - 使用简化的加载界面
+  // 正在加载认证状态
+  // 注意：这里必须给一个可见的占位。useSession() 的 loading 发生在客户端水合之后，
+  // 路由级的 loading.tsx 不会覆盖它——之前返回 null 会让 /chat 出现纯白屏
+  // （首次访问还要等 dev 编译 + /api/auth/session 返回，白屏会持续数秒）。
   if (isLoading) {
-    return null // 让 Next.js 的全局 loading.tsx 处理
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-muted-foreground">正在验证身份...</div>
+      </div>
+    )
   }
 
   // 未登录
   if (!isAuthenticated) {
-    // 如果设置了重定向，不显示任何内容（等待重定向）
+    // 如果设置了重定向，显示占位而不是白屏，等待上面的 effect 跳转
     if (redirectTo) {
-      return null
+      return (
+        <div className="flex h-screen items-center justify-center">
+          <div className="text-muted-foreground">正在跳转...</div>
+        </div>
+      )
     }
 
     // 没有设置重定向，显示登录对话框
