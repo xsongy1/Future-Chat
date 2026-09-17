@@ -1,7 +1,9 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
-/node_modules
+# 注意：不要写成 /node_modules —— 带前导斜杠只锚定仓库根目录，
+# 匹配不到 packages/*/node_modules，会把嵌套的依赖目录提交进仓库。
+node_modules/
 /.pnp
 .pnp.*
 .yarn/*
@@ -52,3 +54,7 @@ next-env.d.ts
 .pnpm-store
 .test-data
 public/generated/
+
+# AI 生成图片的落盘目录（docker-compose 把它挂到容器的 /app/public/generated）
+# 生成物不入库：会被 .env 的 IMAGE_STORAGE_DIR 指向，且体积极大
+/generated/
