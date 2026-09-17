@@ -1,4 +1,4 @@
-# Sky Chat 开发环境 .dockerignore
+# Future-Chat 开发环境 .dockerignore
 # 用于开发环境 Docker 构建（如果需要）
 
 # Dependencies
@@ -56,6 +56,8 @@ docker-compose.yml
 
 # Generated images (runtime volume)
 public/generated
+# docker-compose 把根目录的 generated 挂到 /app/public/generated，属于运行时数据，不进构建上下文
+generated
 
 # Cursor/Windsurf
 .cursor
