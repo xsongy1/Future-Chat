@@ -57,12 +57,16 @@ export interface CostEstimate {
   matchedKey: string
 }
 
-/** 按模型 id 查找单价：先精确匹配，再按前缀最长匹配 */
-export function getModelPrice(model: string): ModelPrice | null {
+/**
+ * 按模型 id 匹配单价：先精确匹配，再按前缀最长匹配
+ *
+ * @returns 命中的价目表 key 与单价；未命中返回 null
+ */
+function matchModelPrice(model: string): { key: string; price: ModelPrice } | null {
   if (!model) return null
 
   // 精确匹配
-  if (MODEL_PRICES[model]) return MODEL_PRICES[model]
+  if (MODEL_PRICES[model]) return { key: model, price: MODEL_PRICES[model] }
 
   // 前缀匹配（取最长匹配，如 'deepseek-ai/DeepSeek-V3.2' → 'deepseek-ai/DeepSeek-V3'）
   let best: { key: string; price: ModelPrice } | null = null
@@ -73,7 +77,12 @@ export function getModelPrice(model: string): ModelPrice | null {
       }
     }
   }
-  return best?.price ?? null
+  return best
+}
+
+/** 按模型 id 查找单价：先精确匹配，再按前缀最长匹配 */
+export function getModelPrice(model: string): ModelPrice | null {
+  return matchModelPrice(model)?.price ?? null
 }
 
 /**
@@ -85,9 +94,10 @@ export function estimateCost(
   inputTokens: number,
   outputTokens: number
 ): CostEstimate | null {
-  const price = getModelPrice(model)
-  if (!price) return null
+  const matched = matchModelPrice(model)
+  if (!matched) return null
 
+  const { price } = matched
   const estimatedCost =
     (inputTokens / 1_000_000) * price.inputPerMillion +
     (outputTokens / 1_000_000) * price.outputPerMillion
@@ -96,7 +106,8 @@ export function estimateCost(
     estimatedCost: round(estimatedCost, 6),
     currency: 'USD',
     price,
-    matchedKey: model,
+    // 命中的价目表 key（不是入参 model）：'gpt-4o-2024-08-06' 命中的是 'gpt-4o'
+    matchedKey: matched.key,
   }
 }
 

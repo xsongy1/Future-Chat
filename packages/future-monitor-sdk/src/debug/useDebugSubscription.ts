@@ -12,6 +12,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useDebugStore } from './store'
 import type { MonitorEvent } from '../core/types'
+import type { MetricPhase, TtfbSource } from '../core/trace'
 
 /** DebugPlugin 接口 */
 interface IDebugPlugin {
@@ -59,7 +60,7 @@ export function useDebugSubscription(
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [error, setError] = useState<string | null>(null)
 
-  const { addEvent, updateVital, addRequest, updateSession, setEvents, updateTrace, addTraceToHistory } = useDebugStore()
+  const { addEvent, updateVital, addRequest, updateSession, setEvents, updateTrace, addTraceToHistory, patchTraceMetrics } = useDebugStore()
   const unsubscribeRef = useRef<(() => void) | null>(null)
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const startTimeRef = useRef<number>(0)
@@ -67,10 +68,22 @@ export function useDebugSubscription(
     traceId: string
     aiMessageId: string
     startTime: number
+    endTime?: number
     state: 'active' | 'completed' | 'error' | 'aborted'
     phases: Array<{ name: string; startTime: number; endTime?: number }>
     tools: Array<{ toolCallId: string; name: string; startTime: number; endTime?: number; success?: boolean }>
-    metrics: { ttfb?: number; chunkCount?: number; duration?: number }
+    metrics: {
+      ttfb?: number
+      ttfbSource?: TtfbSource
+      firstChunkLatency?: number
+      ttft?: number
+      ttftPhase?: MetricPhase
+      ttfa?: number
+      chunkCount?: number
+      rawChunkCount?: number
+      bytesReceived?: number
+      duration?: number
+    }
     usage?: {
       inputTokens?: number
       outputTokens?: number
@@ -79,6 +92,38 @@ export function useDebugSubscription(
       tokensPerSec?: number
     }
   } | null>(null)
+
+  /**
+   * 把结束事件（sse_complete/sse_error/sse_abort）里的指标合并进当前 Trace
+   *
+   * 结束时事件携带的是最终口径（TTFB 可能已被 Resource Timing 校准、
+   * TTLB 按末字节结算），优先于过程中收到的中间值。
+   */
+  const mergeEndMetrics = useCallback(
+    (data: Record<string, unknown>, duration: number) => {
+      const metrics = currentTraceRef.current?.metrics
+      if (!metrics) return
+      metrics.duration = duration
+      if (typeof data.ttfb === 'number' || data.ttfb === null) {
+        metrics.ttfb = data.ttfb === null ? undefined : (data.ttfb as number)
+      }
+      if (data.ttfbSource === 'fetch-headers' || data.ttfbSource === 'resource-timing') {
+        metrics.ttfbSource = data.ttfbSource
+      }
+      if (typeof data.firstChunkLatency === 'number') {
+        metrics.firstChunkLatency = data.firstChunkLatency
+      }
+      if (typeof data.ttft === 'number') metrics.ttft = data.ttft
+      if (data.ttftPhase === 'thinking' || data.ttftPhase === 'answer') {
+        metrics.ttftPhase = data.ttftPhase
+      }
+      if (typeof data.ttfa === 'number') metrics.ttfa = data.ttfa
+      if (typeof data.chunkCount === 'number') metrics.chunkCount = data.chunkCount
+      if (typeof data.rawChunkCount === 'number') metrics.rawChunkCount = data.rawChunkCount
+      if (typeof data.bytesReceived === 'number') metrics.bytesReceived = data.bytesReceived
+    },
+    []
+  )
 
   /**
    * 处理事件
@@ -131,7 +176,7 @@ export function useDebugSubscription(
         }
       }
 
-      // sse_complete/sse_error/sse_abort: 结束 trace
+      // sse_complete/sse_error/sse_abort: 结束 trace（TTLB / duration 在这里定稿）
       if (
         (event.type === 'sse_complete' || event.type === 'sse_error' || event.type === 'sse_abort') &&
         currentTraceRef.current
@@ -139,15 +184,48 @@ export function useDebugSubscription(
         const endState =
           event.type === 'sse_complete' ? 'completed' : event.type === 'sse_error' ? 'error' : 'aborted'
         currentTraceRef.current.state = endState
-        currentTraceRef.current.metrics.duration = Number(event.data.ttlb ?? event.data.duration ?? 0)
+        currentTraceRef.current.endTime = event.timestamp
+        mergeEndMetrics(
+          event.data,
+          Number(event.data.ttlb ?? event.data.duration ?? 0)
+        )
         addTraceToHistory({ ...currentTraceRef.current })
         updateTrace(null)
         currentTraceRef.current = null
       }
 
-      // sse_first_chunk: 更新 TTFB
+      // sse_first_byte: TTFB（首字节 = 响应头到达）
+      // refined 的那条是流结束后补发的 Resource Timing 校准值，可能晚于 sse_complete，
+      // 所以要能回填到已归档的 Trace 上（否则历史记录里永远是未校准的值）
+      if (event.type === 'sse_first_byte') {
+        const traceId = String(event.data.traceId ?? '')
+        const ttfb = Number(event.data.ttfb ?? 0)
+        const ttfbSource =
+          event.data.source === 'resource-timing' ? 'resource-timing' : 'fetch-headers'
+
+        if (currentTraceRef.current && (!traceId || currentTraceRef.current.traceId === traceId)) {
+          currentTraceRef.current.metrics.ttfb = ttfb
+          currentTraceRef.current.metrics.ttfbSource = ttfbSource
+          updateTrace({ ...currentTraceRef.current })
+        } else if (event.data.refined === true && traceId) {
+          patchTraceMetrics(traceId, { ttfb, ttfbSource })
+        }
+      }
+
+      // sse_first_chunk: First Chunk Latency（首个响应体数据块）
       if (event.type === 'sse_first_chunk' && currentTraceRef.current) {
-        currentTraceRef.current.metrics.ttfb = Number(event.data.ttfb ?? 0)
+        currentTraceRef.current.metrics.firstChunkLatency = Number(
+          event.data.firstChunkLatency ?? 0
+        )
+        updateTrace({ ...currentTraceRef.current })
+      }
+
+      // sse_first_token: TTFT（首个模型 token）
+      if (event.type === 'sse_first_token' && currentTraceRef.current) {
+        currentTraceRef.current.metrics.ttft = Number(event.data.ttft ?? 0)
+        if (event.data.phase === 'thinking' || event.data.phase === 'answer') {
+          currentTraceRef.current.metrics.ttftPhase = event.data.phase
+        }
         updateTrace({ ...currentTraceRef.current })
       }
 
@@ -242,6 +320,10 @@ export function useDebugSubscription(
             ...currentSession,
             traceCount: Number(event.data.traceCount ?? currentSession.traceCount),
             toolUsage: (event.data.toolUsage as Record<string, number>) ?? currentSession.toolUsage,
+            isVisible:
+              typeof event.data.isVisible === 'boolean'
+                ? event.data.isVisible
+                : currentSession.isVisible,
           })
         }
       }
@@ -255,7 +337,7 @@ export function useDebugSubscription(
         }
       }
     },
-    [addEvent, updateVital, addRequest, updateSession, updateTrace, addTraceToHistory]
+    [addEvent, updateVital, addRequest, updateSession, updateTrace, addTraceToHistory, mergeEndMetrics, patchTraceMetrics]
   )
 
   /**

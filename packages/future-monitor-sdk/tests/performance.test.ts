@@ -19,12 +19,18 @@ class CollectorPlugin implements Plugin {
   }
 }
 
-/** 测试访问私有成员 */
+/**
+ * 测试访问私有成员
+ *
+ * 这里只声明"面板/测试要用的那部分"：与 PerformancePlugin 求交集会让私有属性
+ * （clsValue 等在类里是 private）把整个交叉类型坍缩成 never，属性访问就全报错了。
+ */
 type ClsHarness = {
   clsValue: number
   reportCls: (final: boolean) => void
   inpWorst: number
   reportInp: (final: boolean) => void
+  getVitals: () => { CLS?: number; INP?: number }
 }
 
 function setup(options: ConstructorParameters<typeof PerformancePlugin>[0] = {}) {
@@ -33,7 +39,7 @@ function setup(options: ConstructorParameters<typeof PerformancePlugin>[0] = {})
   const plugin = new PerformancePlugin(options)
   monitor.use(plugin)
   monitor.use(collector)
-  return { monitor, collector, plugin: plugin as unknown as PerformancePlugin & ClsHarness }
+  return { monitor, collector, plugin: plugin as unknown as ClsHarness }
 }
 
 beforeEach(() => {

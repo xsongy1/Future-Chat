@@ -101,7 +101,7 @@ export function DebugPanel({ connectionStatus = 'connected', connectionError }: 
     const handleMouseMove = (e: MouseEvent) => {
       const newX = e.clientX - dragOffset.current.x
       const newY = e.clientY - dragOffset.current.y
-      setPosition({ x: newX, y: newY })
+      setPosition({ x: newX, y: newY }, size)
     }
 
     const handleMouseUp = () => setIsDragging(false)
@@ -113,7 +113,7 @@ export function DebugPanel({ connectionStatus = 'connected', connectionError }: 
       document.removeEventListener('mousemove', handleMouseMove)
       document.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [isDragging, setPosition])
+  }, [isDragging, setPosition, size])
 
   // 缩放移动
   useEffect(() => {
@@ -140,10 +140,10 @@ export function DebugPanel({ connectionStatus = 'connected', connectionError }: 
 
   // 窗口 resize 时重新约束位置
   useEffect(() => {
-    const handleResize = () => setPosition(position)
+    const handleResize = () => setPosition(position, size)
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
-  }, [position, setPosition])
+  }, [position, setPosition, size])
 
   // 连接状态 Badge
   const getStatusBadge = () => {

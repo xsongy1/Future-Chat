@@ -14,7 +14,6 @@ import { Button } from '@/components/ui/button'
 /** DebugPlugin 队列 API 类型 */
 interface DebugPluginWithQueue {
   getQueueStatus: () => Promise<{ pending: number; offline: number }>
-  subscribeQueue: (fn: (status: { pending: number; offline: number }) => void) => () => void
   flushQueue: () => Promise<boolean>
   clearQueue: () => void
 }
@@ -25,16 +24,27 @@ export function QueueTab() {
   const [isClearing, setIsClearing] = useState(false)
   const [lastResult, setLastResult] = useState<'success' | 'error' | null>(null)
 
-  // 订阅队列状态
+  // 轮询队列状态
   useEffect(() => {
     const debugPlugin = (window as unknown as Record<string, DebugPluginWithQueue>).__SKY_MONITOR_DEBUG__
-    if (!debugPlugin?.subscribeQueue) return
+    if (!debugPlugin) return
 
-    const unsubscribe = debugPlugin.subscribeQueue((status) => {
-      updateQueueCounts(status.pending, status.offline)
-    })
+    const fetchStatus = () => {
+      debugPlugin
+        .getQueueStatus()
+        .then((status) => {
+          updateQueueCounts(status.pending, status.offline)
+        })
+        .catch(() => {
+          // 静默失败，避免未处理的 rejection
+        })
+    }
 
-    return unsubscribe
+    // 立即取一次，随后每秒刷新
+    fetchStatus()
+    const timer = setInterval(fetchStatus, 1000)
+
+    return () => clearInterval(timer)
   }, [updateQueueCounts])
 
   const handleFlush = async () => {

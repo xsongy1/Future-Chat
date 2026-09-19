@@ -104,8 +104,15 @@ export class DebugPlugin implements Plugin {
   /**
    * 模拟一次完整的 AI 请求链路（走真实 Trace API，产出真实事件流）
    *
+   * 时间线用**注入时钟**推进（模拟是同步的，用真实时钟会得到一堆 0ms 指标，
+   * 甚至让 First Chunk Latency 小于 TTFB），并显式声明没有 Resource Timing 条目，
+   * 避免把面板里真实请求的读数串到模拟 Trace 上。
+   *
+   * 模拟时间线（相对 T0）：首字节 180 → 首个数据块 220 → 首个 token 460
+   * → answer 首个 token 1520 → 末字节 3200（error / abort 在中途结束）
+   *
    * kind:
-   * - success:  完整成功链路（start → chunks → 阶段 → usage → complete）
+   * - success:  完整成功链路（start → 首字节 → 数据块 → token → 阶段 → complete）
    * - error:    结构化错误结束（默认 RATE_LIMIT，可用 error 参数自定义）
    * - abort:    用户中止
    * - usage:    成功 + token 用量与成本
@@ -119,23 +126,43 @@ export class DebugPlugin implements Plugin {
     if (!monitor) return null
 
     const model = options.model ?? 'deepseek-ai/DeepSeek-V3.2'
+    let now = 1_000
     const trace = monitor.createTrace({
       aiMessageId: `demo_msg_${Date.now()}`,
       previousTraceId: kind === 'retry' ? (this.lastDemoTraceId ?? undefined) : undefined,
       model,
       provider: 'siliconflow',
+      // 自控时钟：让同步的模拟也能给出真实形状的时间线
+      now: () => now,
+      // 模拟 Trace 不参与 Resource Timing 校准
+      resourceEntries: () => [],
     })
     this.lastDemoTraceId = trace.traceId
     monitor.setCurrentTrace(trace)
     trace.start()
 
-    // 模拟流式：首字节 + 若干 chunk + 阶段
-    trace.firstChunk()
+    trace.markRequestStart({ url: '/api/chat' })
+
+    now += 180
+    trace.firstByte() // TTFB = 180（首字节 / 响应头）
+
+    now += 40
+    trace.rawChunk(64) // FCL = 220（首个数据块）
+
+    now += 240
+    trace.firstToken('thinking') // TTFT = 460（首个 token）
     trace.phaseStart('thinking')
     trace.recordChunk()
     trace.phaseEnd('thinking')
+
+    now += 60
     trace.phaseStart('answer')
-    for (let i = 0; i < 8; i += 1) trace.recordChunk()
+    now += 1000
+    trace.firstToken('answer') // TTFA = 1520（首个 answer token）
+    for (let i = 0; i < 8; i += 1) {
+      now += 100
+      trace.recordChunk()
+    }
 
     if (kind === 'error') {
       const err = options.error ?? {
@@ -145,6 +172,7 @@ export class DebugPlugin implements Plugin {
         retryable: true,
       }
       trace.phaseEnd('answer')
+      now += 240
       trace.error(err)
       monitor.setCurrentTrace(null)
       return trace.traceId
@@ -152,21 +180,24 @@ export class DebugPlugin implements Plugin {
 
     if (kind === 'abort') {
       trace.phaseEnd('answer')
+      now += 240
       trace.abort('user_cancel')
       monitor.setCurrentTrace(null)
       return trace.traceId
     }
 
-    // success / usage：工具调用 + 用量 + 完成
+    // success / usage：工具调用 + 用量 + 完成（时间线不随 kind 变化）
     trace.toolStart('web_search', { query: 'AI 监控' }, 'tool_demo_1')
     trace.toolEnd('web_search', { toolCallId: 'tool_demo_1', success: true, resultCount: 5 })
     trace.phaseEnd('answer')
 
+    now += 180
     if (kind === 'usage') {
       trace.setUsage({ inputTokens: 1240, outputTokens: 860 })
     }
 
-    trace.complete()
+    now += 700
+    trace.complete() // TTLB = 3200（末字节 / 流关闭）
     monitor.setCurrentTrace(null)
     return trace.traceId
   }

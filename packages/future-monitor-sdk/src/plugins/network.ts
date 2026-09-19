@@ -7,6 +7,7 @@
 
 import type { MonitorEvent, Plugin } from '../core/types'
 import type { Monitor } from '../core/monitor'
+import { testRegex } from '../core/regex'
 
 export interface NetworkPluginOptions {
   /** 只采集匹配的 URL（默认全部） */
@@ -24,6 +25,8 @@ export class NetworkPlugin implements Plugin {
   private fetchOriginal: typeof fetch | null = null
   private xhrOpenOriginal: XMLHttpRequest['open'] | null = null
   private xhrSendOriginal: XMLHttpRequest['send'] | null = null
+  /** 是否已包装过原生 API：同一实例被重复 use 时不再二次包装（否则请求被双计数） */
+  private initialized = false
 
   constructor(options: NetworkPluginOptions = {}) {
     this.options = {
@@ -34,7 +37,10 @@ export class NetworkPlugin implements Plugin {
 
   setup(monitor: Monitor): void {
     this.monitor = monitor
+    // window 判定排在幂等标志之前：SSR 期 setup 不能置位，否则水合后包装不上
     if (typeof window === 'undefined') return
+    if (this.initialized) return
+    this.initialized = true
 
     this.patchFetch()
     this.patchXHR()
@@ -51,6 +57,7 @@ export class NetworkPlugin implements Plugin {
       this.xhrOpenOriginal = null
       this.xhrSendOriginal = null
     }
+    this.initialized = false
   }
 
   processEvent(_event: MonitorEvent): MonitorEvent | null {
@@ -117,10 +124,18 @@ export class NetworkPlugin implements Plugin {
       this: XMLHttpRequest,
       ...args: Parameters<XMLHttpRequest['send']>
     ) {
+      // 先摘掉上一轮残留的 loadend 监听：XHR 实例复用（open/send 多轮，甚至上一轮
+      // 是不采集的 URL）时旧监听仍挂在实例上，闭包里还是上一轮的 URL，
+      // 会造成重复上报与 URL 串味
+      if (this.__skyMonitorLoadEnd) {
+        this.removeEventListener('loadend', this.__skyMonitorLoadEnd)
+        this.__skyMonitorLoadEnd = undefined
+      }
+
       const meta = this.__skyMonitor
       if (meta) {
         const startTime = performance.now()
-        this.addEventListener('loadend', function (this: XMLHttpRequest) {
+        const onLoadEnd = function (this: XMLHttpRequest) {
           monitor?.track('http_request', {
             url: meta.url,
             method: meta.method,
@@ -128,7 +143,9 @@ export class NetworkPlugin implements Plugin {
             duration: Math.round(performance.now() - startTime),
             error: this.status === 0 ? 'network_error' : undefined,
           })
-        })
+        }
+        this.__skyMonitorLoadEnd = onLoadEnd
+        this.addEventListener('loadend', onLoadEnd)
       }
       return originalSend.apply(this, args)
     }
@@ -159,18 +176,11 @@ export class NetworkPlugin implements Plugin {
   }
 }
 
-/**
- * 安全的正则测试：重置 lastIndex，避免带 g flag 的正则因
- * lastIndex 状态残留导致间歇性匹配失败
- */
-function testRegex(regex: RegExp, value: string): boolean {
-  regex.lastIndex = 0
-  return regex.test(value)
-}
-
 // 类型扩展：XHR 上的私有元数据
 declare global {
   interface XMLHttpRequest {
     __skyMonitor?: { method: string; url: string }
+    /** 本次 send 挂上的 loadend 监听：复用同一实例时先摘掉，避免重复上报 */
+    __skyMonitorLoadEnd?: (this: XMLHttpRequest, event: Event) => void
   }
 }

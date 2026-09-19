@@ -12,6 +12,7 @@
 
 import type { Plugin } from '../core/types'
 import type { Monitor } from '../core/monitor'
+import { testRegex } from '../core/regex'
 
 export interface ErrorPluginOptions {
   /** 忽略的错误消息（正则） */
@@ -33,6 +34,8 @@ export class ErrorPlugin implements Plugin {
   private lastErrorKey = ''
   private lastErrorTime = 0
   private consoleErrorOriginal: ((...args: unknown[]) => void) | null = null
+  /** 是否已挂过监听：同一实例被重复 use 时不再二次包装 console.error */
+  private initialized = false
 
   constructor(options: ErrorPluginOptions = {}) {
     this.options = {
@@ -45,7 +48,11 @@ export class ErrorPlugin implements Plugin {
 
   setup(monitor: Monitor): void {
     this.monitor = monitor
+    // window 判定必须排在幂等标志之前：SSR 期调用 setup 不能把 initialized 置位，
+    // 否则水合后真正的浏览器 setup 会被幂等判断挡掉，监听永远挂不上
     if (typeof window === 'undefined') return
+    if (this.initialized) return
+    this.initialized = true
 
     window.addEventListener('error', this.handleError)
     window.addEventListener('unhandledrejection', this.handleRejection)
@@ -65,15 +72,23 @@ export class ErrorPlugin implements Plugin {
   }
 
   reset(): void {
-    if (typeof window === 'undefined') return
-    window.removeEventListener('error', this.handleError)
-    window.removeEventListener('unhandledrejection', this.handleRejection)
-    window.removeEventListener('error', this.handleResourceError, true)
+    // 幂等标志复位：与 window 是否存在无关，否则 Node 侧（测试）reset 后无法再 setup
+    this.initialized = false
+
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('error', this.handleError)
+      window.removeEventListener('unhandledrejection', this.handleRejection)
+      window.removeEventListener('error', this.handleResourceError, true)
+    }
 
     if (this.options.captureConsoleError && this.consoleErrorOriginal) {
       console.error = this.consoleErrorOriginal
       this.consoleErrorOriginal = null
     }
+
+    // 清空窗口去重状态：否则 reset 之后第一条同 key 错误会被上一次的窗口吃掉
+    this.lastErrorKey = ''
+    this.lastErrorTime = 0
   }
 
   // ==================== 处理器 ====================
@@ -134,11 +149,11 @@ export class ErrorPlugin implements Plugin {
 
   private isIgnored(message: string, url?: string): boolean {
     for (const rule of this.options.ignoreErrors) {
-      if (rule.test(message)) return true
+      if (testRegex(rule, message)) return true
     }
     if (url) {
       for (const rule of this.options.ignoreUrls) {
-        if (rule.test(url)) return true
+        if (testRegex(rule, url)) return true
       }
     }
     return false

@@ -15,6 +15,7 @@ import { useChatStore } from '@/features/chat/store/chat.store'
 import { SSEParser } from '@/features/chat/utils/sse-parser'
 import { StreamBuffer } from '@/features/chat/utils/stream-buffer'
 import { sanitizeToolCallSyntax } from '@/shared/utils/sanitize-tool-syntax'
+import { classifyStreamError } from '@/lib/monitor/trace-helper'
 import type { SSEData } from '@/features/chat/types/chat'
 import { StreamTelemetry } from './stream-telemetry'
 import { RoundContentTracker } from './round-content-tracker'
@@ -55,26 +56,36 @@ export class StreamHandler {
   async run(): Promise<void> {
     try {
       await SSEParser.parseStream(this.reader, {
+        // 数据块到达 → First Chunk Latency（比事件解析更早、更接近真实到达时间）
+        onChunk: (bytes) => this.telemetry.onRawChunk(bytes),
         onData: (data) => this.handleData(data),
         onError: (error) => this.handleError(error),
-        onComplete: () => this.finishStream(),
+        onComplete: () => this.finishStream('complete'),
+        // 中断单独走一条通道：否则用户点停止会被记成"正常完成"
+        onAbort: () => this.finishStream('abort'),
       })
     } finally {
       this.thinkingBuffer.destroy()
       this.answerBuffer.destroy()
+      // 流已真正关闭：校准 TTFB 并按"末字节"结算 TTLB（正常结束的 Trace 在这里收口）
+      this.telemetry.onStreamClosed()
     }
   }
 
   /** 事件分发 */
   private handleData(data: SSEData): void {
-    // ========== 埋点：首个 chunk + 逐 chunk 计数 ==========
+    // ========== 埋点：逐 SSE 事件计数 + 卡顿检测 ==========
     this.telemetry.onChunk()
 
     switch (data.type) {
       case 'thinking':
+        // ========== 埋点：首个 token（TTFT） ==========
+        if (data.content) this.telemetry.onToken('thinking')
         this.handleThinking(data)
         break
       case 'answer':
+        // ========== 埋点：首个 token（TTFT / TTFA） ==========
+        if (data.content) this.telemetry.onToken('answer')
         this.handleAnswer(data)
         break
       case 'tool_call':
@@ -233,8 +244,14 @@ export class StreamHandler {
     this.rounds.onToolResult()
   }
 
-  /** 流结束（complete 事件或 onComplete 兜底）：刷新缓冲、结束流式状态、埋点 */
-  private finishStream(): void {
+  /**
+   * 流内容结束：刷新缓冲、结束流式状态、按结局收尾埋点
+   *
+   * - complete：只收尾阶段，不结束 Trace——TTLB 是"末字节"，由 run() 的 finally
+   *   在流真正关闭时结算（同时给 Resource Timing 校准 TTFB 的机会）
+   * - abort：按中止结束 Trace（用户点停止 / 浏览器取消请求）
+   */
+  private finishStream(reason: 'complete' | 'abort' = 'complete'): void {
     this.thinkingBuffer.forceFlush()
     this.answerBuffer.forceFlush()
 
@@ -242,8 +259,12 @@ export class StreamHandler {
     s.stopStreaming()
     s.updateMessage(this.messageId, { displayState: 'idle' })
 
-    // ========== 埋点：完成（幂等，complete 事件与 onComplete 兜底只结束一次） ==========
-    this.telemetry.finish('complete')
+    // ========== 埋点：阶段收尾（幂等，complete 事件与兜底回调只收尾一次） ==========
+    if (reason === 'abort') {
+      this.telemetry.finish('abort', 'stream_aborted')
+    } else {
+      this.telemetry.onStreamEnd()
+    }
   }
 
   /** 流错误 */
@@ -256,7 +277,9 @@ export class StreamHandler {
     s.updateMessage(this.messageId, { hasError: true, displayState: 'error' })
     s.stopStreaming()
 
-    // ========== 埋点：错误 ==========
-    this.telemetry.finish('error', error.message)
+    // ========== 埋点：结构化错误 ==========
+    // 必须在这里给出完整错误信息：Trace 到此结束，chat.service 的 catch 再补
+    // endTrace 已经无效（当前 Trace 已被清空），statusCode/retryable 会丢
+    this.telemetry.finish('error', classifyStreamError(error))
   }
 }

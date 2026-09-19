@@ -2,9 +2,11 @@
  * Future-monitor-sdk - 轻量级 AI 应用监控
  *
  * 插件化管道：采集（error/performance/network）→ 处理（dedupe/sampling/debug）→ 上报（transport）
- * Trace / Session 一等 API：SSE 链路追踪（TTFB/TTLB/阶段/工具调用/卡顿/重试）
+ * Trace / Session 一等 API：SSE 链路追踪（TTFB / First Chunk Latency / TTFT / TTLB / 阶段 /
+ * 工具调用 / 卡顿 / 重试）
  *
- * 调试面板（React）从 './debug' 子路径导入。
+ * 调试面板（React）从 './debug' 子路径导入：它是源码内子路径（依赖宿主设计系统，
+ * 不随 npm 包发布，package.json 的 exports 里没有该条目），仅在配了 paths 映射的宿主里可用。
  */
 
 // 核心
@@ -14,6 +16,7 @@ export { Session } from './core/session'
 export { BrowserStorage, BrowserTransport } from './core/storage'
 export { generateEventId, generateTraceId, generateSessionId, generateToolCallId } from './core/ids'
 export { estimateCost, getModelPrice, MODEL_PRICES } from './core/cost'
+export { defaultClock, readResourceTtfb, resourcePath, hasHighResClock } from './core/timing'
 
 // 类型
 export type {
@@ -28,7 +31,19 @@ export type {
   TraceOptions,
 } from './core/types'
 export type { CostEstimate, ModelPrice } from './core/cost'
-export type { TraceState, TraceEmitFn } from './core/trace'
+export type {
+  MetricPhase,
+  TraceEmitFn,
+  TraceMetrics,
+  TraceState,
+  TtfbSource,
+} from './core/trace'
+export type {
+  Clock,
+  ResourceEntrySource,
+  ResourceTimingSample,
+  ResourceTtfbOptions,
+} from './core/timing'
 export type { SessionStats } from './core/session'
 export type { IStorage, ITransport, BrowserTransportOptions } from './core/storage'
 

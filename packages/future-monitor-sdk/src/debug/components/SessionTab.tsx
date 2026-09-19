@@ -4,6 +4,7 @@
 
 'use client'
 
+import { useEffect, useState } from 'react'
 import { useDebugStore } from '../store'
 
 // ShadcnUI 组件
@@ -12,6 +13,19 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 
 export function SessionTab() {
   const { session } = useDebugStore()
+  const sessionId = session?.id ?? null
+  const [now, setNow] = useState(() => Date.now())
+
+  // 会话存在时每秒推进 now，用于刷新持续时长。
+  // 依赖收敛到 sessionId：会话对象每次事件都会换新引用，直接用 session 会反复重建定时器
+  useEffect(() => {
+    if (!sessionId) return
+
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+
+    return () => clearInterval(timer)
+  }, [sessionId])
 
   if (!session) {
     return (
@@ -21,7 +35,7 @@ export function SessionTab() {
     )
   }
 
-  const duration = Date.now() - session.startTime
+  const duration = now - session.startTime
   const toolEntries = Object.entries(session.toolUsage)
 
   return (

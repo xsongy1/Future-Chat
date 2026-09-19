@@ -2,13 +2,13 @@
 
 轻量级 AI 应用监控 SDK（工作区包 `packages/future-monitor-sdk`，包名 `future-monitor-sdk`）。核心 gzip ≈ 1.4KB（tree-shaking 后），面向 LLM 对话场景：
 
-- **SSE 链路追踪**：完整生命周期（TTFB/TTLB）、阶段拆分（thinking/answer）、工具调用链路、卡顿检测（sse_stall/sse_resume）、重试链路串联（previousTraceId）
+- **SSE 链路追踪**：完整生命周期（TTFB / First Chunk Latency / TTFT / TTFA / TTLB）、阶段拆分（thinking/answer）、工具调用链路、卡顿检测（sse_stall/sse_resume）、重试链路串联（previousTraceId）
 - **错误监控**：JS 错误 / Promise 拒绝 / 资源加载失败 / console.error，忽略规则 + 窗口去重
 - **性能采集**：Web Vitals（FCP/LCP/CLS/INP）+ 页面导航时序
 - **网络监控**：fetch / XHR 拦截，请求耗时与状态
 - **智能上报**：批处理（10 条/5s）+ 关键事件直发 + 指数退避重试 + 离线持久化（断网补发）
 - **采样**：random / session 模式、按类型采样率、关键事件永远 100%
-- **调试面板**（`future-monitor-sdk/debug`，仅开发环境）：事件流 / Trace / 性能 / 网络 / 会话 / 队列实时可视化
+- **调试面板**（`future-monitor-sdk/debug`，仅开发环境、源码内子路径）：事件流 / Trace / 性能 / 网络 / 会话 / 队列实时可视化
 
 ## 架构
 
@@ -17,7 +17,7 @@
   debug(1000) → error/performance/network(200) → dedupe(100) → sampling(50) → transport(-1000)
 ```
 
-核心不依赖 React；调试面板通过 `./debug` 子路径按需加载。
+核心不依赖 React；调试面板通过 `./debug` 子路径按需加载（详见 §6 的路径说明）。
 
 ---
 
@@ -114,8 +114,14 @@ monitor.setCurrentTrace(trace)
 trace.start()                     // → sse_start
 
 // ...SSE 流式过程中：
-trace.firstChunk()                // 首字节 → sse_first_chunk (TTFB)
-trace.recordChunk()               // 每个 chunk 调用 → 卡顿检测
+trace.markRequestStart({ url: '/api/chat' })  // T0：fetch 之前，所有延迟指标的基准
+// const res = await fetch('/api/chat', ...)
+trace.firstByte()                 // 首字节（响应头到达）→ sse_first_byte (TTFB)
+// const { value } = await reader.read()
+trace.rawChunk(value.byteLength)  // 每个数据块 → 首个即 sse_first_chunk (First Chunk Latency)
+// 首个带内容的增量帧
+trace.firstToken('thinking')      // 首个 token → sse_first_token (TTFT)
+trace.recordChunk()               // 每个 SSE 事件调用 → 事件计数 + 卡顿检测
 trace.phaseStart('thinking')      // → phase_start
 trace.phaseEnd('thinking')        // → phase_end
 
@@ -123,15 +129,43 @@ trace.toolStart('web_search', { query: 'AI' }, 'tool_123')   // → tool_start
 trace.toolEnd('web_search', { toolCallId: 'tool_123', success: true, resultCount: 5 })
                                                                 // → tool_end
 
-trace.complete()                  // 正常结束 → sse_complete (TTLB)
+trace.complete()                  // 流真正关闭时调用 → sse_complete（TTLB = 末字节）
 // trace.error('模型超时')        // 出错 → sse_error
 // trace.abort('user_cancel')     // 用户取消 → sse_abort
 monitor.setCurrentTrace(null)
 ```
 
 > 建议封装一层 helper（参考本项目 `lib/monitor/trace-helper.ts`），
-> 让业务代码只调 `startTrace / endTrace / startToolWithId / endTool`，
+> 让业务代码只调 `startTrace / markRequestStart / markFirstByte / recordRawChunk / endTrace`，
 > Monitor 未初始化时全部静默返回，不抛错。
+
+### 延迟指标口径
+
+五个指标共用同一个基准 **T0 = 请求真正发出的时刻**（`markRequestStart()`），
+所以它们可以直接互相比较、相减；指标 = 事件时刻 − T0。
+
+| 指标 | 含义 | 触发方法 | 事件 |
+|---|---|---|---|
+| **TTFB** | 首字节：HTTP 响应头到达客户端 | `firstByte()`（`await fetch()` 之后立刻调用），结束后由 Resource Timing 校准 | `sse_first_byte` |
+| **First Chunk Latency** | 首个响应体数据块（`read()` 首次拿到字节） | `rawChunk()` / `firstChunk()` | `sse_first_chunk` |
+| **TTFT** | 首个模型生成的 token（首个带内容的 thinking/answer 增量） | `firstToken(phase)` | `sse_first_token` |
+| **TTFA** | 首个 answer token（思考型模型另算） | `firstToken('answer')` | 随 `sse_complete` 给出 |
+| **TTLB** | 末字节：流关闭 | `complete()`（流真正结束时） | `sse_complete` |
+
+恒等关系（网络物理决定的）：`0 ≤ TTFB ≤ First Chunk Latency ≤ TTFT ≤ TTLB`
+
+- **TTFB 里没有模型生成时间**：它只到"响应头到达"，反映 DNS/TCP/TLS/排队 + 服务端首包。
+- **首块延迟**比 TTFB 多出服务端把首块 flush 出来的时间。
+- **TTFT** 比首块延迟多出模型首 token 生成时间：首个数据块可能只含 role 帧、usage 帧、
+  心跳或半条 SSE 帧，所以不能用首块延迟冒充 TTFB（那会把模型生成时间算进网络指标）。
+- 结束时 `complete()` / `error()` / `abort()` 会用 Resource Timing 的 `responseStart`
+  把 TTFB 从"主线程观测到的响应头时刻"校准为"网络层首字节"，事件里用 `ttfbSource` 标明来源
+  （`fetch-headers` / `resource-timing`）。同步这次通常取不到条目（浏览器一般在响应体收完后才写入），
+  因此还会补一次 0ms 延迟读取，命中就补发一条 `sse_first_byte`，载荷带 `refined: true`：
+  **同一 traceId 内，带 `refined` 的那条是 TTFB 最终值**（面板会自动回填到已归档的 Trace）。
+  两次都取不到就保留 `fetch-headers` 原值——不编造数字，也不会把 TTFB 改大。
+- 任何结束方式都会先关闭仍未闭合的阶段（`phase_end` 带 `auto: true`），
+  所以用户点停止这类"先结束 Trace、后抛 AbortError"的顺序也不会留下永远"进行中"的阶段。
 
 ## 5. 会话管理
 
@@ -139,17 +173,27 @@ monitor.setCurrentTrace(null)
 // 页面加载时
 monitor.startSession()            // → session_start
 
+// 页面可见性变化（visibilitychange）
+monitor.setSessionVisible(document.visibilityState === 'visible')
+                                  // → session_visibility（session_end 里也会带上 isVisible）
+
 // 每次对话/工具调用自动计数（由 trace-helper 调用）
 monitor.getSession()?.incrementTraceCount()
 monitor.getSession()?.incrementToolUsage('web_search')
 
 // 页面卸载时
-monitor.endSession()              // → session_end（附带 traceCount / toolUsage 统计）
+monitor.endSession()              // → session_end（附带 traceCount / toolUsage / isVisible 统计）
 ```
 
 React 场景用 `MonitorProvider` 管理生命周期（本项目 `lib/monitor/MonitorProvider.tsx`）。
 
 ## 6. 调试面板（开发环境）
+
+> **`future-monitor-sdk/debug` 是源码内子路径，不是发布产物。** 面板依赖宿主的设计系统
+> （`@/components/ui/*`），因此不随 npm 包发布（见 `scripts/build.mjs`），`package.json` 的
+> `exports` 里也没有 `./debug` 条目——外部安装的包直接 `import 'future-monitor-sdk/debug'`
+> 会报 `ERR_PACKAGE_PATH_NOT_EXPORTED`。它靠宿主 tsconfig 的 `paths`（本仓库映射到
+> `./packages/future-monitor-sdk/src/*`）解析，仅在仓库内可用。
 
 ```tsx
 // React 应用中（懒加载 + 仅 dev）
@@ -174,7 +218,19 @@ SDK 以"单条或数组"批量 POST 事件到 `endpoint`：
     "id": "evt_xxx",
     "type": "sse_complete",
     "timestamp": 1755417600000,
-    "data": { "traceId": "trc_xxx", "ttlb": 2345, "chunkCount": 42 },
+    "data": {
+      "traceId": "trc_xxx",
+      "ttlb": 3200,
+      "ttfb": 180,
+      "ttfbSource": "fetch-headers",
+      "firstChunkLatency": 220,
+      "ttft": 460,
+      "ttftPhase": "thinking",
+      "ttfa": 1520,
+      "chunkCount": 42,
+      "rawChunkCount": 18,
+      "bytesReceived": 20481
+    },
     "context": { "appId": "my-app", "sessionId": "ses_xxx", "traceId": "trc_xxx", "userId": "u_1" }
   }
 ]
@@ -198,7 +254,7 @@ SDK 以"单条或数组"批量 POST 事件到 `endpoint`：
 
 | 类别 | 事件 |
 |---|---|
-| SSE 链路 | `sse_start` `sse_first_chunk` `sse_stall` `sse_resume` `phase_start` `phase_end` `tool_start` `tool_end` `sse_complete` `sse_error` `sse_abort` |
+| SSE 链路 | `sse_start` `sse_first_byte` `sse_first_chunk` `sse_first_token` `sse_stall` `sse_resume` `phase_start` `phase_end` `tool_start` `tool_end` `sse_usage` `sse_complete` `sse_error` `sse_abort` |
 | 会话 | `session_start` `session_end` |
 | 错误 | `js_error` `promise_error` `resource_error` `console_error` |
 | 性能 | `web_vital` `page_loaded` |

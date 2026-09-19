@@ -32,6 +32,9 @@ export interface PerformancePluginOptions {
 
 type VitalName = 'FCP' | 'LCP' | 'CLS' | 'INP'
 
+/** event timing 条目：interactionId 为 0 表示不是交互（部分 TS 版本的 lib.dom 未收录该字段） */
+type EventTimingEntry = PerformanceEventTiming & { interactionId?: number }
+
 export class PerformancePlugin implements Plugin {
   name = 'performance'
   priority = 200
@@ -44,6 +47,12 @@ export class PerformancePlugin implements Plugin {
   private inpWorst = 0
   private lastInpReportTime = 0
   private visibilityHandler: (() => void) | null = null
+  /** load 事件监听：导航时序在 load 触发前读不到完整读数，需等到那时再报 */
+  private loadHandler: (() => void) | null = null
+  /** 延后采集导航时序的定时器（setup 期间管道尚未装配完） */
+  private navigationTimer: ReturnType<typeof setTimeout> | null = null
+  /** 是否已挂观察器：同一实例被重复 use 时不再重复挂载（否则指标被双计数） */
+  private initialized = false
 
   constructor(options: PerformancePluginOptions = {}) {
     this.options = {
@@ -55,7 +64,10 @@ export class PerformancePlugin implements Plugin {
 
   setup(monitor: Monitor): void {
     this.monitor = monitor
+    // 环境判定排在幂等标志之前：SSR 期 setup 不能置位，否则水合后观察器建不起来
     if (typeof window === 'undefined' || typeof PerformanceObserver === 'undefined') return
+    if (this.initialized) return
+    this.initialized = true
 
     this.observeVital('paint', 'FCP', (entry) => entry.startTime)
     this.observeVital('largest-contentful-paint', 'LCP', (entry) => entry.startTime)
@@ -63,7 +75,12 @@ export class PerformancePlugin implements Plugin {
     this.observeInp()
 
     if (this.options.captureNavigation) {
-      this.captureNavigation()
+      // 延后一拍再采：setup 是在 use() 期间同步执行的，此刻管道还没装配完
+      //（上报插件通常最后注册），当场发 page_loaded 会漏掉它——面板能看到、后端永远收不到
+      this.navigationTimer = setTimeout(() => {
+        this.navigationTimer = null
+        this.captureNavigation()
+      }, 0)
     }
 
     // 页面隐藏时上报 CLS / INP 最终值（web-vitals 规范行为）
@@ -87,6 +104,14 @@ export class PerformancePlugin implements Plugin {
     this.lastClsReportTime = 0
     this.inpWorst = 0
     this.lastInpReportTime = 0
+    this.initialized = false
+
+    if (this.navigationTimer) {
+      clearTimeout(this.navigationTimer)
+      this.navigationTimer = null
+    }
+
+    this.removeLoadHandler()
 
     if (this.visibilityHandler && typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.visibilityHandler)
@@ -136,7 +161,11 @@ export class PerformancePlugin implements Plugin {
     try {
       const observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          this.clsValue += (entry as LayoutShift).value
+          const shift = entry as LayoutShift
+          // hadRecentInput 的偏移是用户交互（点击/按键后 500ms 内）引起的，
+          // 按 web-vitals 规范不计入 CLS
+          if (shift.hadRecentInput) continue
+          this.clsValue += shift.value
           this.reportCls(false)
         }
       })
@@ -152,7 +181,11 @@ export class PerformancePlugin implements Plugin {
     try {
       const observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          const duration = (entry as PerformanceEventTiming).duration
+          const timing = entry as EventTimingEntry
+          // interactionId 为 0 的条目不是交互（例如 mousemove、程序化触发的 event
+          // timing），按 web-vitals 规范不计入 INP
+          if (!timing.interactionId) continue
+          const duration = timing.duration
           if (Number.isFinite(duration) && duration > this.inpWorst) {
             this.inpWorst = duration
             this.reportInp(false)
@@ -200,17 +233,56 @@ export class PerformancePlugin implements Plugin {
 
   private captureNavigation(): void {
     try {
-      const entries = performance.getEntriesByType('navigation')
-      const nav = entries[0] as PerformanceNavigationTiming | undefined
+      const nav = this.readNavigation()
       if (!nav) return
 
-      this.monitor?.track('page_loaded', {
-        ttfb: nav.responseStart - nav.requestStart,
-        domContentLoaded: nav.domContentLoadedEventEnd - nav.startTime,
-        load: nav.loadEventEnd - nav.startTime,
-      })
+      if (nav.loadEventEnd > 0) {
+        this.reportNavigation(nav)
+        return
+      }
+
+      // load 还没触发：loadEventEnd / domContentLoadedEventEnd 都是 0，
+      // 直接相减会上报 0ms 的假数据（SDK 通常在 load 之前初始化），
+      // 所以等到 load 事件后再取一次读数
+      if (this.loadHandler) return
+      this.loadHandler = () => {
+        this.removeLoadHandler()
+        try {
+          const fresh = this.readNavigation()
+          if (fresh) this.reportNavigation(fresh)
+        } catch {
+          // 静默跳过
+        }
+      }
+      window.addEventListener('load', this.loadHandler, { once: true })
     } catch {
       // 静默跳过
     }
+  }
+
+  private readNavigation(): PerformanceNavigationTiming | null {
+    const entries = performance.getEntriesByType('navigation')
+    return (entries[0] as PerformanceNavigationTiming | undefined) ?? null
+  }
+
+  /** 上报导航时序：读数为 0 的字段一律不报，避免编造数字 */
+  private reportNavigation(nav: PerformanceNavigationTiming): void {
+    const domContentLoaded = nav.domContentLoadedEventEnd - nav.startTime
+    const load = nav.loadEventEnd - nav.startTime
+    if (!(domContentLoaded > 0) || !(load > 0)) return
+
+    this.monitor?.track('page_loaded', {
+      ttfb: nav.responseStart - nav.requestStart,
+      domContentLoaded,
+      load,
+    })
+  }
+
+  private removeLoadHandler(): void {
+    if (!this.loadHandler) return
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('load', this.loadHandler)
+    }
+    this.loadHandler = null
   }
 }

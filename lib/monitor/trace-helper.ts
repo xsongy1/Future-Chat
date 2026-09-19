@@ -11,6 +11,14 @@ import type { TokenUsage, TraceError, ToolResult } from 'future-monitor-sdk'
 import { getMonitor } from './index'
 
 /**
+ * 最近一条已结束的 Trace ID
+ *
+ * endTrace 会清空 currentTrace，重试时拿不到上一轮的 ID，
+ * 这里留一份用于重试链路（previousTraceId）关联。
+ */
+let lastTraceId: string | undefined
+
+/**
  * 创建并启动 Trace
  * @param aiMessageId - AI 消息 ID
  * @param previousTraceId - 重试时的原 Trace ID
@@ -54,6 +62,9 @@ export function endTrace(
 
     const trace = monitor.getCurrentTrace()
     if (!trace) return
+
+    // 先记下 ID：下面清空 currentTrace 之后就取不到了（重试链路要用）
+    lastTraceId = trace.traceId
 
     switch (reason) {
       case 'complete':
@@ -106,7 +117,41 @@ export function getCurrentTraceId(): string | undefined {
 }
 
 /**
- * 记录首个 chunk（TTFB）
+ * 获取最近一条**已结束**的 Trace ID（用于重试链路关联）
+ */
+export function getLastTraceId(): string | undefined {
+  return lastTraceId
+}
+
+/**
+ * 把任意异常归类成结构化错误（TraceError）
+ *
+ * 一次回答的失败可能发生在三个阶段，这里用**同一套判定**，避免口径分裂：
+ * - fetch 失败（chat.service）：TypeError 且无 status → NETWORK_ERROR
+ * - 流读取中断（StreamHandler）：同上，属于网络类失败
+ * - HTTP 非 2xx：带 statusCode，由 Trace 按码分类（429→RATE_LIMIT、401/403→AUTH_ERROR、5xx→PROVIDER_ERROR）
+ *
+ * `retryable` 供上层决定要不要自动重试：网络类失败、429、503 视为可重试。
+ */
+export function classifyStreamError(error: unknown): TraceError {
+  const err = (error ?? {}) as Error & { status?: number }
+  const message = err.message || 'Unknown error'
+  const statusCode = typeof err.status === 'number' ? err.status : undefined
+  const isNetworkError = err.name === 'TypeError' && statusCode === undefined
+
+  return {
+    code: isNetworkError ? 'NETWORK_ERROR' : undefined,
+    message,
+    statusCode,
+    retryable: isNetworkError || statusCode === 429 || statusCode === 503,
+  }
+}
+
+/**
+ * 记录首个 chunk（First Chunk Latency）
+ *
+ * 常规路径不需要手写：SSEParser 每收到一个数据块就会调 recordRawChunk()，
+ * 由 Trace 自己判断"是不是第一个"。这个显式入口留给没有走流的宿主。
  */
 export function recordFirstChunk(): void {
   try {
@@ -119,6 +164,87 @@ export function recordFirstChunk(): void {
     trace.firstChunk()
   } catch (e) {
     console.warn('[TraceHelper] recordFirstChunk failed:', e)
+  }
+}
+
+/**
+ * 标记 T0：请求真正发出的时刻（所有延迟指标的基准）
+ *
+ * 必须在 fetch 之前调用，否则指标会把序列化 / 动态 import 等本地耗时算进去。
+ *
+ * @param url - 请求 URL（结束时用于 Resource Timing 校准 TTFB）
+ */
+export function markRequestStart(url?: string): void {
+  try {
+    const monitor = getMonitor()
+    if (!monitor) return
+
+    const trace = monitor.getCurrentTrace()
+    if (!trace) return
+
+    trace.markRequestStart({ url })
+  } catch (e) {
+    console.warn('[TraceHelper] markRequestStart failed:', e)
+  }
+}
+
+/**
+ * 标记首字节（TTFB）：fetch() resolve、HTTP 响应头到达
+ *
+ * 注意这不是第一个 SSE 帧——那是 First Chunk Latency。
+ * 必须在 `await fetch()` 之后立刻调用，中间不要插入其它 await。
+ */
+export function markFirstByte(): void {
+  try {
+    const monitor = getMonitor()
+    if (!monitor) return
+
+    const trace = monitor.getCurrentTrace()
+    if (!trace) return
+
+    trace.firstByte()
+  } catch (e) {
+    console.warn('[TraceHelper] markFirstByte failed:', e)
+  }
+}
+
+/**
+ * 首个模型 token（TTFT）
+ *
+ * 只在带内容的 thinking / answer 增量帧上调用；role 帧、usage 帧、心跳都不算 token。
+ *
+ * @param phase - 该增量属于 thinking 还是 answer
+ */
+export function recordFirstToken(phase: 'thinking' | 'answer'): void {
+  try {
+    const monitor = getMonitor()
+    if (!monitor) return
+
+    const trace = monitor.getCurrentTrace()
+    if (!trace) return
+
+    trace.firstToken(phase)
+  } catch (e) {
+    console.warn('[TraceHelper] recordFirstToken failed:', e)
+  }
+}
+
+/**
+ * 网络层数据块到达（每次 reader.read() 拿到数据调用一次）
+ *
+ * 首个数据块即 First Chunk Latency，同时累计块数与字节数。
+ */
+export function recordRawChunk(bytes: number): void {
+  try {
+    const monitor = getMonitor()
+    if (!monitor) return
+
+    const trace = monitor.getCurrentTrace()
+    if (!trace) return
+
+    trace.rawChunk(bytes)
+  } catch {
+    // 静默失败，chunk 记录非常频繁
   }
 }
 

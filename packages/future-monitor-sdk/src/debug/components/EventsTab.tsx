@@ -156,17 +156,29 @@ function getEventSummary(event: { type: string; data: Record<string, unknown> })
     case 'sse_start':
       return `开始 ${data.aiMessageId ?? ''}`
     case 'sse_complete':
-      return `完成 ttlb=${data.ttlb}ms`
+      return `完成 ttlb=${data.ttlb}ms ttfb=${data.ttfb ?? '-'}ms fcl=${
+        data.firstChunkLatency ?? '-'
+      }ms ttft=${data.ttft ?? '-'}ms`
     case 'sse_error':
-      return `错误: ${data.error ?? ''}`
+      return `错误: ${data.error ?? data.message ?? ''}`
     case 'sse_abort':
-      return `中止: ${data.reason ?? ''}`
+      return `中止: ${data.reason ?? data.message ?? ''}`
     case 'sse_usage':
       return `Token 输入=${data.inputTokens} 输出=${data.outputTokens}${
         data.estimatedCost != null ? ` 成本=$${data.estimatedCost}` : ''
       }`
+    case 'sse_first_byte':
+      return `首字节 ttfb=${data.ttfb}ms${
+        data.source === 'resource-timing'
+          ? data.refined === true
+            ? ' (resource-timing 补校)'
+            : ' (resource-timing)'
+          : ''
+      }`
     case 'sse_first_chunk':
-      return `首字节 ttfb=${data.ttfb}ms`
+      return `首个数据块 fcl=${data.firstChunkLatency}ms`
+    case 'sse_first_token':
+      return `首个 token ttft=${data.ttft}ms${data.phase ? ` (${data.phase})` : ''}`
     case 'sse_stall':
       return `卡顿 ${data.stallDuration}ms`
     case 'sse_resume':
@@ -174,11 +186,13 @@ function getEventSummary(event: { type: string; data: Record<string, unknown> })
     case 'phase_start':
       return `${data.phase} 开始`
     case 'phase_end':
-      return `${data.phase} 结束 ${data.duration}ms`
+      return `${data.phase} 结束${data.auto ? '（自动）' : ''}`
     case 'tool_start':
       return `${data.name} 开始`
     case 'tool_end':
-      return `${data.name} ${data.success ? '成功' : '失败'} ${data.duration}ms`
+      return `${data.name} ${data.success ? '成功' : '失败'}${
+        typeof data.error === 'string' && data.error ? ` ${data.error}` : ''
+      }${typeof data.resultCount === 'number' ? ` 结果数=${data.resultCount}` : ''}`
     // 旧事件类型（兼容）
     case 'trace_start':
       return `开始 ${data.aiMessageId ?? ''}`

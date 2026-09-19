@@ -20,9 +20,16 @@ import {
   startTrace,
   endTrace,
   getCurrentTraceId,
+  getLastTraceId,
+  markRequestStart,
+  markFirstByte,
+  classifyStreamError,
 } from '@/lib/monitor/trace-helper'
 import { getMonitor } from '@/lib/monitor'
 import { trackUserAction } from '@/lib/monitor/user-actions'
+
+/** 聊天接口路径：埋点需要它做 T0 标记与 Resource Timing 校准 */
+const CHAT_API_PATH = '/api/chat'
 
 /**
  * 通知后端取消正在执行的工具（/api/chat/cancel-tool）
@@ -55,14 +62,47 @@ async function requestToolCancellation(
   }
 }
 
+/**
+ * 等待在飞的 sendMessage 收尾（isSendingMessage 复位），最多等 5s 兜底
+ *
+ * 中断流之后必须等它真正结束：sendMessage 开头的 isSendingMessage 守卫会让
+ * 紧随其后的重发被静默跳过（消息已删、DB 已删，却什么都没重发）。
+ */
+function waitForSendIdle(timeoutMs = 5000): Promise<void> {
+  if (!useChatStore.getState().isSendingMessage) return Promise.resolve()
+
+  return new Promise<void>((resolve) => {
+    // 句柄放进对象：finish 需要在两者赋值之前就能引用它们，
+    // 若用 let 声明再赋值，prefer-const 会判为"从未重新赋值"
+    const handles: { unsubscribe?: () => void; timer?: ReturnType<typeof setTimeout> } = {}
+
+    const finish = () => {
+      handles.unsubscribe?.()
+      const timer = handles.timer
+      if (timer !== undefined) clearTimeout(timer)
+      resolve()
+    }
+
+    handles.unsubscribe = useChatStore.subscribe((state) => {
+      if (!state.isSendingMessage) finish()
+    })
+
+    // 订阅前可能刚好复位：补一次检查，避免白等 5s
+    if (!useChatStore.getState().isSendingMessage) {
+      finish()
+      return
+    }
+
+    // 兜底：状态万一没复位，也不能让重试流程永久挂住
+    handles.timer = setTimeout(finish, timeoutMs)
+  })
+}
+
 export const ChatService = {
   /**
    * 中断当前流式请求
    */
   abortStream(): void {
-    // ========== 埋点：用户行为（停止生成）==========
-    trackUserAction('stop_generation')
-
     // ========== 埋点：先结束 Trace ==========
     endTrace('abort', 'user_cancel')
 
@@ -278,27 +318,39 @@ export const ChatService = {
       const streamController = new AbortController()
       useChatStore.getState().setStreamAbortController(streamController)
 
-      const response = await fetch('/api/chat', {
+      // 请求体先序列化好：JSON.stringify（含最大 ~1MB 的 attachments）是本地耗时，
+      // 放在 markRequestStart 之前才不会被算进 T0
+      const body = JSON.stringify({
+        content,
+        conversationId,
+        model: store.selectedModel,
+        enableThinking: store.enableThinking,
+        enableWebSearch: store.enableWebSearch,
+        enableKnowledgeBase: store.enableKnowledgeBase,
+        // 用户选定的知识库：服务端据此把 knowledge_search 收敛到该知识库
+        knowledgeBaseId: store.selectedKnowledgeBaseId || undefined,
+        enableImageGeneration,
+        imageConfig,
+        thinkingBudget: 4096,
+        userMessageId,
+        aiMessageId,
+        attachments,
+      })
+
+      // ========== 埋点：T0 = 请求真正发出的时刻（所有延迟指标的基准）==========
+      // 必须紧贴 fetch：中间夹序列化 / 动态 import 等本地耗时会让全部指标一起偏大
+      markRequestStart(CHAT_API_PATH)
+
+      const response = await fetch(CHAT_API_PATH, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content,
-          conversationId,
-          model: store.selectedModel,
-          enableThinking: store.enableThinking,
-          enableWebSearch: store.enableWebSearch,
-          enableKnowledgeBase: store.enableKnowledgeBase,
-          // 用户选定的知识库：服务端据此把 knowledge_search 收敛到该知识库
-          knowledgeBaseId: store.selectedKnowledgeBaseId || undefined,
-          enableImageGeneration,
-          imageConfig,
-          thinkingBudget: 4096,
-          userMessageId,
-          aiMessageId,
-          attachments,
-        }),
+        body,
         signal: streamController.signal,
       })
+
+      // ========== 埋点：TTFB = 首字节（响应头到达）==========
+      // 紧跟 fetch：这是"首字节"的最早可观测点；后面任何一个 await 都会让它偏大
+      markFirstByte()
 
       if (!response.ok) {
         // 保留 HTTP 状态码，供埋点做结构化错误分类
@@ -309,8 +361,11 @@ export const ChatService = {
         throw err
       }
 
-      // 读取响应头中的标题更新，立即同步到前端 store
-      await syncConversationTitle(conversationId, response)
+      // 标题同步与流消费并行：它只写本地 store，await 它会推迟首个数据块的读取，
+      // 把本地耗时算进 First Chunk Latency / TTFT（指标必须只反映服务端与网络）
+      void syncConversationTitle(conversationId, response).catch((e) =>
+        console.warn('[ChatService] syncConversationTitle failed:', e)
+      )
 
       const reader = response.body?.getReader()
       if (!reader) throw new Error('No reader')
@@ -331,15 +386,10 @@ export const ChatService = {
       })
       store.stopStreaming()
 
-      // ========== 埋点：结构化错误结束（statusCode → 自动分类，429 等可重试） ==========
-      const err = e as Error & { status?: number }
-      const isNetworkError = err.name === 'TypeError' && err.status === undefined
-      endTrace('error', {
-        code: isNetworkError ? 'NETWORK_ERROR' : undefined,
-        message: err.message || 'Unknown error',
-        statusCode: err.status,
-        retryable: isNetworkError || err.status === 429 || err.status === 503,
-      })
+      // ========== 埋点：结构化错误结束（与流中途出错共用同一套分类口径） ==========
+      // 注意：流已经开始读取后出错的情况由 StreamHandler 结束 Trace，这里的 endTrace 会是空操作；
+      // 这条路径覆盖的是 fetch 本身失败 / HTTP 非 2xx / 拿不到 reader。
+      endTrace('error', classifyStreamError(e))
     } finally {
       useChatStore.getState().setStreamAbortController(null)
       store.setSendingMessage(false)
@@ -359,11 +409,17 @@ export const ChatService = {
     trackUserAction('retry', { messageId })
 
     // ========== 埋点：获取当前 Trace ID ==========
-    const previousTraceId = getCurrentTraceId()
+    // 正常重试时上一条 Trace 已结束（endTrace 会清空 currentTrace），
+    // 所以回退到"刚结束的那条"，让 retry 链路（previousTraceId）真正连上
+    const previousTraceId = getCurrentTraceId() ?? getLastTraceId()
 
     if (store.streamingMessageId) {
       store.stopStreaming('user_retry')
     }
+
+    // 等在飞的 sendMessage 真正收尾，再改消息：否则删除先执行，
+    // 而 sendMessage 的 isSendingMessage 守卫会把重发静默吃掉
+    await waitForSendIdle()
 
     const index = store.messages.findIndex((m) => m.id === messageId)
     if (index === -1) return
@@ -375,8 +431,10 @@ export const ChatService = {
     const removed = store.removeMessagesFrom(index)
     const idsToDelete = removed.map((m) => m.id)
 
-    // 找到最后一条用户消息
-    const lastUserMsg = [...store.messages]
+    // 找到最后一条用户消息：只看被保留的前半段（index 之前的消息不受删除影响），
+    // store 快照里的后续消息已被 removeMessagesFrom 移除，扫全量会取到错误的那条
+    const lastUserMsg = store.messages
+      .slice(0, index)
       .reverse()
       .find((m) => m.role === 'user')
     if (!lastUserMsg) return

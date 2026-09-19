@@ -1,6 +1,7 @@
 'use client'
 
 import { CopyButton } from './CopyButton'
+import { reactNodeToPlainText } from './plain-text'
 
 interface CodeBlockProps {
   inline?: boolean
@@ -11,7 +12,9 @@ interface CodeBlockProps {
 export function CodeBlock({ inline, className, children }: CodeBlockProps) {
   const match = /language-(\w+)/.exec(className || '')
   const language = match ? match[1] : ''
-  const code = String(children).replace(/\n$/, '')
+  // 不能用 String(children)：被 rehype-highlight 高亮后 children 是一串元素，
+  // String() 会 join(',') 成 "[object Object],..."，复制出来全是乱码
+  const code = reactNodeToPlainText(children).replace(/\n$/, '')
 
   if (inline) {
     return (

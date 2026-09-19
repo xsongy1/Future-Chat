@@ -9,6 +9,7 @@ import { ChatService } from '@/features/chat/services/chat.service'
 import { useAudioRecorder } from '@/features/voice/hooks/use-audio-recorder'
 import { VoiceAPI } from '@/features/voice/services/voice-api'
 import { useToast } from '@/lib/hooks/use-toast'
+import { trackUserAction } from '@/lib/monitor/user-actions'
 import type { FileAttachment } from '@/features/chat/types/chat'
 import type { ImageConfig } from '../ImageGenerationModal'
 
@@ -52,6 +53,9 @@ export function useChatInput({ conversationId }: UseChatInputOptions) {
   )
 
   const handleStop = useCallback(() => {
+    // ========== 埋点：用户行为（停止生成）==========
+    // 只在这里记：abortStream() 也会被切会话 / 取消工具等非用户路径调用
+    trackUserAction('stop_generation')
     ChatService.abortStream()
     stopStreaming('user_stop')
   }, [stopStreaming])

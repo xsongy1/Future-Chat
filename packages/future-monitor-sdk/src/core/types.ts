@@ -3,6 +3,7 @@
  */
 
 import type { Monitor } from './monitor'
+import type { Clock, ResourceEntrySource } from './timing'
 
 /** 事件上下文：随事件一起上报的公共维度 */
 export interface MonitorContext {
@@ -121,4 +122,14 @@ export interface TraceOptions {
   model?: string
   /** 模型供应商（如 siliconflow/openai），缺省从 model 推导 */
   provider?: string
+  /**
+   * 时间源（默认 performance.now，回退 Date.now）。
+   * 注入点用于测试与需要自控时钟的场景，不要与墙钟混用。
+   */
+  now?: Clock
+  /**
+   * Resource Timing 条目来源（默认浏览器 performance.getEntriesByType('resource')）。
+   * 仅用于把 TTFB 从"主线程观测到的响应头时刻"校准为网络层 responseStart。
+   */
+  resourceEntries?: ResourceEntrySource
 }

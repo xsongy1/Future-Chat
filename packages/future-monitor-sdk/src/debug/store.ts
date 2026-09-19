@@ -45,12 +45,14 @@ interface DebugStore {
   clearEvents: () => void
   setExpanded: (expanded: boolean) => void
   setActiveTab: (tab: TabType) => void
-  setPosition: (pos: { x: number; y: number }) => void
+  setPosition: (pos: { x: number; y: number }, size?: { width: number; height: number }) => void
   setSelectedEventId: (id: string | null) => void
 
   // Trace 操作
   updateTrace: (trace: TraceData | null) => void
   addTraceToHistory: (trace: TraceData) => void
+  /** 按 traceId 回填已归档 Trace 的指标（流结束后补发的 TTFB 校准用） */
+  patchTraceMetrics: (traceId: string, metrics: Partial<TraceData['metrics']>) => void
 
   // Session 操作
   updateSession: (session: SessionData | null) => void
@@ -179,8 +181,8 @@ export const useDebugStore = create<DebugStore>((set) => ({
 
   setActiveTab: (tab) => set({ activeTab: tab }),
 
-  setPosition: (pos) => {
-    const constrained = constrainPosition(pos)
+  setPosition: (pos, size) => {
+    const constrained = constrainPosition(pos, size?.width, size?.height)
     savePosition(constrained)
     set({ position: constrained })
   },
@@ -194,6 +196,13 @@ export const useDebugStore = create<DebugStore>((set) => ({
       const newHistory = [trace, ...state.traceHistory].slice(0, MAX_TRACE_HISTORY)
       return { traceHistory: newHistory }
     }),
+
+  patchTraceMetrics: (traceId, metrics) =>
+    set((state) => ({
+      traceHistory: state.traceHistory.map((trace) =>
+        trace.traceId === traceId ? { ...trace, metrics: { ...trace.metrics, ...metrics } } : trace
+      ),
+    })),
 
   updateSession: (session) => set({ session }),
 

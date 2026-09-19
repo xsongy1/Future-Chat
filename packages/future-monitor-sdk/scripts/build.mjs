@@ -10,7 +10,7 @@
  * 调试面板（src/debug）依赖宿主设计系统，不随 npm 包发布。
  */
 import ts from 'typescript'
-import { writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -71,11 +71,17 @@ function addJsExtensions(dir) {
       }
       if (!entry.name.endsWith('.js') && !entry.name.endsWith('.d.ts')) continue
       const src = readFileSync(p, 'utf8')
+      const baseDir = path.dirname(p)
       const out = src.replace(
-        /(\bfrom\s*|\bimport\s*\(\s*)(['"])(\.{1,2}\/[^'"]*?)\2/g,
+        /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.{1,2}\/[^'"]*?)\2/g,
         (m, pre, q, spec) => {
-          if (/\.(js|mjs|cjs|json|css)$/.test(spec)) return m
+          // 已带扩展名（含 .ts/.tsx 等源码扩展名）的不再补，避免 x.js.js
+          if (/\.[a-z]+$/i.test(spec)) return m
           count++
+          // 目录导入：Node ESM 不会自动找目录，必须落到 index.js
+          if (isDirectory(path.resolve(baseDir, spec))) {
+            return `${pre}${q}${spec}/index.js${q}`
+          }
           return `${pre}${q}${spec}.js${q}`
         }
       )
@@ -84,6 +90,15 @@ function addJsExtensions(dir) {
   }
   walk(dir)
   console.log(`  ↳ ${path.relative(root, dir)} 补全 ${count} 处相对导入扩展名`)
+}
+
+/** 目标是否存在且是目录（用于把目录导入补成 /index.js） */
+function isDirectory(target) {
+  try {
+    return statSync(target).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 // 清理旧产物

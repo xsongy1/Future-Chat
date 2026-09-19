@@ -3,6 +3,7 @@
  */
 
 import type { MonitorEvent } from '../core/types'
+import type { MetricPhase, TtfbSource } from '../core/trace'
 
 export type { MonitorEvent }
 
@@ -34,9 +35,24 @@ export interface TraceData {
   endTime?: number
   phases: PhaseData[]
   tools: ToolData[]
+  /**
+   * 延迟指标（口径见 core/trace.ts，全部相对 T0 = 请求真正发出的时刻）
+   * - ttfb：首字节（响应头到达）
+   * - firstChunkLatency：首个响应体数据块
+   * - ttft：首个模型 token
+   * - ttfa：首个 answer token
+   * - duration：TTLB（末字节 / 流关闭）
+   */
   metrics: {
     ttfb?: number
+    ttfbSource?: TtfbSource
+    firstChunkLatency?: number
+    ttft?: number
+    ttftPhase?: MetricPhase
+    ttfa?: number
     chunkCount?: number
+    rawChunkCount?: number
+    bytesReceived?: number
     duration?: number
   }
   /** Token 用量与成本（sse_usage 事件） */
@@ -110,7 +126,9 @@ export const EVENT_COLORS: Record<string, string> = {
   sse_complete: '#3b82f6',
   sse_error: '#ef4444',
   sse_abort: '#f97316',
+  sse_first_byte: '#93c5fd',
   sse_first_chunk: '#60a5fa',
+  sse_first_token: '#3b82f6',
   sse_stall: '#f59e0b',
   sse_resume: '#22c55e',
 

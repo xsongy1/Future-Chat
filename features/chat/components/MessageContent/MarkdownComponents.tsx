@@ -1,5 +1,6 @@
 import { Suspense } from 'react'
 import { CodeBlock } from './CodeBlock'
+import { reactNodeToPlainText } from './plain-text'
 import { isMediaBlock, mediaRegistry } from './blocks/registry'
 import { ImageBlock } from './blocks/ImageBlock'
 import type { Components } from 'react-markdown'
@@ -18,7 +19,8 @@ export function createMarkdownComponents(
       // 提取语言标识
       const match = /language-(\w+)/.exec(className || '')
       const language = match?.[1] || ''
-      const content = String(children).replace(/\n$/, '')
+      // 同 CodeBlock：高亮后 children 是元素数组，String() 会得到 "[object Object],..."
+      const content = reactNodeToPlainText(children).replace(/\n$/, '')
 
       // 检查是否是媒体块
       if (language && isMediaBlock(language)) {

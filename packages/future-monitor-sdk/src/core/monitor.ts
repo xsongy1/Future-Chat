@@ -30,11 +30,27 @@ export class Monitor {
 
   // ==================== 插件管理 ====================
 
-  /** 注册插件：调用 setup 并按 priority 降序排序（稳定排序，同优先级保持注册顺序） */
+  /**
+   * 注册插件：入管道 → 按 priority 降序排序（稳定排序，同优先级保持注册顺序）→ 调用 setup
+   *
+   * 顺序很关键：插件必须先进入管道再 setup，否则 setup 里同步产出的事件连插件自己
+   * 都收不到。注意这只保证"已注册的插件"能收到——上报插件通常最后注册，
+   * 因此插件不应在 setup 里直接发事件，而应延后一拍（见 PerformancePlugin 的导航时序采集）。
+   */
   use(plugin: Plugin): this {
-    plugin.setup?.(this)
+    // 幂等：同一实例重复 use 不应让 processEvent 被调用两次
+    if (this.plugins.includes(plugin)) return this
+
     this.plugins.push(plugin)
     this.plugins.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+
+    try {
+      plugin.setup?.(this)
+    } catch (error) {
+      // setup 失败即回滚注册：不留一个只有半条命的插件
+      this.plugins.splice(this.plugins.indexOf(plugin), 1)
+      throw error
+    }
     return this
   }
 
@@ -60,12 +76,19 @@ export class Monitor {
    * 返回最终事件；被管道丢弃时返回 null。
    */
   track(type: string, data: Record<string, unknown> = {}): MonitorEvent | null {
+    const context = this.buildContext()
+    // 载荷里显式带 traceId 的事件（例如 Trace 结束后补发的 TTFB 校准）也要能按 traceId 聚合：
+    // 此时 currentTrace 已被清空，不能让 context.traceId 丢成 null
+    if (!context.traceId && typeof data.traceId === 'string') {
+      context.traceId = data.traceId
+    }
+
     const event: MonitorEvent = {
       id: generateEventId(),
       type,
       timestamp: Date.now(),
       data,
-      context: this.buildContext(),
+      context,
     }
 
     if (this.debug) {
@@ -139,6 +162,21 @@ export class Monitor {
     return this.session
   }
 
+  /**
+   * 标记会话可见性并发出 session_visibility 事件
+   *
+   * 与 session_start / session_end 同属会话生命周期事件：宿主在 visibilitychange
+   * 时调用，用于区分"用户还在页面上"与"已切走 / 最小化"。无会话时静默忽略。
+   */
+  setSessionVisible(visible: boolean): void {
+    if (!this.session) return
+    this.session.setVisible(visible)
+    this.track('session_visibility', {
+      sessionId: this.session.sessionId,
+      visible,
+    })
+  }
+
   // ==================== 运维 ====================
 
   /** 刷新所有插件（强制上报缓冲数据） */
@@ -152,7 +190,13 @@ export class Monitor {
     }
   }
 
-  /** 重置所有插件（卸载监听、清理状态） */
+  /**
+   * 重置：卸载插件监听、清理插件状态，并清空管道与 Trace / Session 上下文
+   *
+   * 清空管道是刻意的：插件 reset 之后监听与定时器都已卸载，若继续留在管道里，
+   * 后续 track() 的事件只会被静默缓冲（批处理通道再没人驱动），表现为"静默丢数据"。
+   * 需要继续使用请重新 use() 注册插件。
+   */
   reset(): void {
     for (const plugin of this.plugins) {
       try {
@@ -161,5 +205,8 @@ export class Monitor {
         // 忽略
       }
     }
+    this.plugins.splice(0)
+    this.currentTrace = null
+    this.session = null
   }
 }

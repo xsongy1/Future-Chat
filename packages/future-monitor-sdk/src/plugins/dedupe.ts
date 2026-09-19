@@ -70,10 +70,37 @@ export class DedupePlugin implements Plugin {
   }
 }
 
-/** 事件载荷指纹：稳定序列化（key 排序），截断避免超长 */
+/**
+ * 指纹里必须剔除的易变字段：Trace/Session 身份 + 时延与吞吐读数
+ *
+ * 这些字段每次请求都不同（同一错误重试两次，message/errorCode/statusCode 完全一致，
+ * 但 traceId、duration、ttfb、chunkCount 必然不同）。留着它们会让"同内容错误"的指纹
+ * 各不相同，去重形同虚设——而错误风暴正是 sse_error 最主要的重复来源。
+ */
+const VOLATILE_KEYS = new Set([
+  'traceId',
+  'sessionId',
+  'duration',
+  'ttfb',
+  'ttfbSource',
+  'firstChunkLatency',
+  'ttft',
+  'ttftPhase',
+  'ttfa',
+  'chunkCount',
+  'rawChunkCount',
+  'bytesReceived',
+  'chunksPerSec',
+  'tokensPerSec',
+  'estimatedCost',
+])
+
+/** 事件载荷指纹：稳定序列化（剔除易变字段 + key 排序），截断避免超长 */
 function fingerprint(data: Record<string, unknown>): string {
   try {
-    const keys = Object.keys(data).sort()
+    const keys = Object.keys(data)
+      .filter((k) => !VOLATILE_KEYS.has(k))
+      .sort()
     const parts = keys.map((k) => `${k}=${JSON.stringify(data[k])}`)
     return parts.join('&').slice(0, 200)
   } catch {

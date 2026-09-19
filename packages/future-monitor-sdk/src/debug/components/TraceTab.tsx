@@ -67,6 +67,8 @@ export function TraceTab() {
 
 /** Trace 详情 */
 function TraceDetail({ trace, compact = false }: { trace: TraceData; compact?: boolean }) {
+  const { metrics } = trace
+
   return (
     <div className="space-y-2">
       {/* 基本信息 */}
@@ -76,22 +78,51 @@ function TraceDetail({ trace, compact = false }: { trace: TraceData; compact?: b
           <span className="font-mono">{trace.traceId.slice(0, 8)}</span>
         </div>
         <div>
-          <span className="text-muted-foreground">TTFB: </span>
-          <span>{trace.metrics.ttfb ?? '-'}ms</span>
+          <span className="text-muted-foreground">耗时: </span>
+          <span>{formatDuration(metrics.duration)}</span>
         </div>
-        {!compact && (
-          <>
-            <div>
-              <span className="text-muted-foreground">Chunks: </span>
-              <span>{trace.metrics.chunkCount ?? 0}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">耗时: </span>
-              <span>{formatDuration(trace.metrics.duration)}</span>
-            </div>
-          </>
+      </div>
+
+      {/* 延迟指标：口径见 SDK core/trace.ts，全部相对 T0（请求发出） */}
+      <div className="rounded-md bg-muted/50 p-2 space-y-1 text-xs">
+        <MetricRow
+          label="TTFB"
+          hint="首字节（响应头）"
+          value={metrics.ttfb}
+          suffix={metrics.ttfbSource === 'resource-timing' ? ' *' : ''}
+        />
+        <MetricRow
+          label="FCL"
+          hint="首个数据块"
+          value={metrics.firstChunkLatency}
+        />
+        <MetricRow
+          label="TTFT"
+          hint={metrics.ttftPhase ? `首个 token（${metrics.ttftPhase}）` : '首个 token'}
+          value={metrics.ttft}
+        />
+        {metrics.ttfa !== undefined && (
+          <MetricRow label="TTFA" hint="首个 answer token" value={metrics.ttfa} />
+        )}
+        {metrics.ttfbSource === 'resource-timing' && (
+          <div className="text-[10px] text-muted-foreground/70">
+            * TTFB 已用 Resource Timing 校准为网络层首字节
+          </div>
         )}
       </div>
+
+      {!compact && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div>
+            <span className="text-muted-foreground">SSE 事件: </span>
+            <span>{metrics.chunkCount ?? 0}</span>
+          </div>
+          <div>
+            <span className="text-muted-foreground">数据块: </span>
+            <span>{metrics.rawChunkCount ?? 0}</span>
+          </div>
+        </div>
+      )}
 
       {/* Token 用量与成本（sse_usage 事件） */}
       {trace.usage && (
@@ -148,9 +179,34 @@ function TraceDetail({ trace, compact = false }: { trace: TraceData; compact?: b
   )
 }
 
+/** 单项延迟指标 */
+function MetricRow({
+  label,
+  hint,
+  value,
+  suffix = '',
+}: {
+  label: string
+  hint: string
+  value?: number
+  suffix?: string
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="text-muted-foreground">
+        <span className="font-mono">{label}</span>
+        <span className="text-muted-foreground/60"> · {hint}</span>
+      </span>
+      <span className="font-mono">
+        {value === undefined ? '-' : `${value}ms`}
+        {value === undefined ? '' : suffix}
+      </span>
+    </div>
+  )
+}
+
 /** 阶段项 */
-function PhaseItem({ phase }: { phase: PhaseData }) {
-  const duration = phase.endTime ? phase.endTime - phase.startTime : null
+function PhaseItem({ phase }: { phase: PhaseData }) {  const duration = phase.endTime ? phase.endTime - phase.startTime : null
 
   return (
     <div className="flex items-center gap-2 text-xs">
