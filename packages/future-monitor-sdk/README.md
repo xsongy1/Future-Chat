@@ -1,6 +1,6 @@
 # Future-monitor-sdk
 
-轻量级 AI 应用监控 SDK（工作区包 `packages/future-monitor-sdk`，包名 `future-monitor-sdk`）。核心 gzip ≈ 1.4KB（tree-shaking 后），面向 LLM 对话场景：
+轻量级 AI 应用监控 SDK（工作区包 `packages/future-monitor-sdk`，包名 `future-monitor-sdk`）。零运行时依赖，DebugPlugin 与调试面板不进 npm `exports`；实测运行时代码（core + 6 个非调试插件，tsc 产物未 minify）原始 81.2KB / gzip ≈ 28.7KB，其中 AI 链路模块 `trace.js` gzip 6.6KB。面向 LLM 对话场景：
 
 - **SSE 链路追踪**：完整生命周期（TTFB / First Chunk Latency / TTFT / TTFA / TTLB）、阶段拆分（thinking/answer）、工具调用链路、卡顿检测（sse_stall/sse_resume）、重试链路串联（previousTraceId）
 - **错误监控**：JS 错误 / Promise 拒绝 / 资源加载失败 / console.error，忽略规则 + 窗口去重

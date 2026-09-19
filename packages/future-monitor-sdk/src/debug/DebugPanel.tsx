@@ -197,7 +197,7 @@ export function DebugPanel({ connectionStatus = 'connected', connectionError }: 
       >
         <div className="flex items-center gap-2">
           {getStatusBadge()}
-          <span className="text-sm font-medium">Sky Monitor</span>
+          <span className="text-sm font-medium">Future Monitor</span>
         </div>
         <div className="flex items-center gap-1 no-drag">
           <TestTriggers />
