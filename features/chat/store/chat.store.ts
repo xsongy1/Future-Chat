@@ -16,6 +16,18 @@ import type {
   StreamingPhase,
 } from '@/features/chat/types/chat'
 import { getDefaultModel, getModelById } from '@/shared/constants/models'
+
+/**
+ * 把 StreamBuffer 里尚未 flush 的内容同步写入 store 的能力
+ *
+ * StreamHandler 的两个 buffer 是私有字段，ChatService 拿不到句柄，
+ * 而"停止生成"必须在同步块里先 flush 再组 save-partial 请求体，
+ * 否则最后一帧（最长一帧的分片）会只显示在 UI、不进数据库。
+ * 这里只依赖这个最小接口，store 不需要知道 StreamHandler 的任何细节。
+ */
+export interface StreamBufferFlusher {
+  flushBuffers(): void
+}
 import { StorageManager, STORAGE_KEYS } from '@/lib/utils/storage'
 
 interface ChatState {
@@ -38,6 +50,9 @@ interface ChatState {
   // 请求中断控制器（运行时状态，不持久化；随 store 生命周期管理，避免模块级单例）
   streamAbortController: AbortController | null
   loadAbortController: AbortController | null
+
+  // 正在消费流的 handler（仅用于中断前同步 flush 缓冲；非持久化运行时状态）
+  activeStreamHandler: StreamBufferFlusher | null
 
   // 配置
   selectedModel: string
@@ -85,6 +100,8 @@ interface ChatActions {
   // 请求中断控制器
   setStreamAbortController: (controller: AbortController | null) => void
   setLoadAbortController: (controller: AbortController | null) => void
+  /** 登记/注销正在消费流的 handler（停止生成时用于先 flush 再落库） */
+  setActiveStreamHandler: (handler: StreamBufferFlusher | null) => void
 
   // 配置
   setModel: (modelId: string) => void
@@ -153,6 +170,7 @@ const initialState: ChatState = {
   abortReason: null,
   streamAbortController: null,
   loadAbortController: null,
+  activeStreamHandler: null,
   selectedModel: getInitialModel(),
   enableThinking: false,
   enableWebSearch: getInitialWebSearch(),
@@ -280,6 +298,8 @@ export const useChatStore = create<ChatState & ChatActions>()((set, get) => ({
 
   setLoadAbortController: (controller) =>
     set({ loadAbortController: controller }),
+
+  setActiveStreamHandler: (handler) => set({ activeStreamHandler: handler }),
 
   // ===== 配置 =====
   setModel: (modelId) => {

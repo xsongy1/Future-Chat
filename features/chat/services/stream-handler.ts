@@ -67,9 +67,25 @@ export class StreamHandler {
     } finally {
       this.thinkingBuffer.destroy()
       this.answerBuffer.destroy()
+      // 注销登记：中断后才能确定"当前没有在飞的 buffer 需要 flush"
+      if (useChatStore.getState().activeStreamHandler === this) {
+        useChatStore.getState().setActiveStreamHandler(null)
+      }
       // 流已真正关闭：校准 TTFB 并按"末字节"结算 TTLB（正常结束的 Trace 在这里收口）
       this.telemetry.onStreamClosed()
     }
+  }
+
+  /**
+   * 把两条缓冲里尚未 flush 的内容同步写入 store
+   *
+   * 停止生成时必须先调用它、再读 store 组 save-partial 请求体：
+   * 否则 buffer 里"最后一帧"的内容只会在 UI 显示，不进数据库（刷新后消失）。
+   * 与 finishStream / handleError 里的 forceFlush 是同一个操作，幂等。
+   */
+  flushBuffers(): void {
+    this.thinkingBuffer.forceFlush()
+    this.answerBuffer.forceFlush()
   }
 
   /** 事件分发 */
@@ -252,8 +268,7 @@ export class StreamHandler {
    * - abort：按中止结束 Trace（用户点停止 / 浏览器取消请求）
    */
   private finishStream(reason: 'complete' | 'abort' = 'complete'): void {
-    this.thinkingBuffer.forceFlush()
-    this.answerBuffer.forceFlush()
+    this.flushBuffers()
 
     const s = useChatStore.getState()
     s.stopStreaming()
@@ -270,8 +285,7 @@ export class StreamHandler {
   /** 流错误 */
   private handleError(error: Error): void {
     console.error('[StreamHandler] stream error:', error)
-    this.thinkingBuffer.forceFlush()
-    this.answerBuffer.forceFlush()
+    this.flushBuffers()
 
     const s = useChatStore.getState()
     s.updateMessage(this.messageId, { hasError: true, displayState: 'error' })

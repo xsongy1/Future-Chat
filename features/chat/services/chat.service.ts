@@ -111,6 +111,12 @@ export const ChatService = {
     store.streamAbortController?.abort()
     store.setStreamAbortController(null)
 
+    // ========== 关键顺序：先把 rAF 缓冲同步刷进 store，再读 content 组请求体 ==========
+    // StreamBuffer 用 rAF 批量刷新，任意时刻 buffer 里都可能压着"最长一帧"的未 flush 内容。
+    // 若直接读 store，这段内容会只显示在 UI、不进数据库，刷新后消失。
+    // （flush 之后 AbortError 触发的 finishStream 会再 forceFlush 一次，幂等）
+    store.activeStreamHandler?.flushBuffers()
+
     const messageId = store.streamingMessageId
     if (!messageId) return
 
@@ -371,7 +377,10 @@ export const ChatService = {
       if (!reader) throw new Error('No reader')
 
       // 消费 SSE 流（解析/缓冲/状态写入/埋点都在 StreamHandler 内部分层处理）
-      await new StreamHandler(reader, aiMessageId).run()
+      // 登记到 store：abortStream() 需要在同步块里拿到 flush 句柄（见 abortStream 注释）
+      const streamHandler = new StreamHandler(reader, aiMessageId)
+      useChatStore.getState().setActiveStreamHandler(streamHandler)
+      await streamHandler.run()
     } catch (e) {
       // AbortError 是正常中断，不算错误
       if ((e as Error).name === 'AbortError') {
@@ -393,6 +402,9 @@ export const ChatService = {
     } finally {
       useChatStore.getState().setStreamAbortController(null)
       store.setSendingMessage(false)
+      // 兜底注销：StreamHandler.run() 的 finally 里也会注销（它才是真正读完流的时刻），
+      // 这里覆盖 fetch 失败 / 拿不到 reader 等"handler 还没创建或没跑完"的路径
+      useChatStore.getState().setActiveStreamHandler(null)
       // 更新消息缓存
       const currentMessages = useChatStore.getState().messages
       useChatStore.getState().cacheMessages(conversationId, currentMessages)

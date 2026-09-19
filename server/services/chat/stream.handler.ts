@@ -23,6 +23,7 @@ import { executeImageGeneration } from '@/server/services/tools/image-generation
 import { registerRunningTool, unregisterRunningTool } from '@/server/services/tools/cancellation'
 import { SSEWriter } from './sse-writer'
 import { persistMessage, processImageResults } from './message-persister'
+import { pickPersistedAnswer } from './round-answer'
 
 export interface StreamContext {
   messageId: string
@@ -405,11 +406,13 @@ export function createSSEStreamWithTools(
           }
 
           thinkingContent += roundThinking
+          // 每轮都记最后一个有内容的回答：这样"轮次跑满上限退出"时也不会落库空内容
+          // （只有无工具调用那条分支赋值的话，跑满 5 轮会把已经流给前端的正文丢掉）
+          finalAnswerContent = pickPersistedAnswer(finalAnswerContent, roundAnswer)
           console.log(`[Stream] AI 返回: answer=${roundAnswer.length}字, tools=${roundToolCalls.length}个`)
 
           // 没有工具调用，结束
           if (roundToolCalls.length === 0) {
-            finalAnswerContent = roundAnswer
             break
           }
 
@@ -458,6 +461,14 @@ export function createSSEStreamWithTools(
           console.log('[Stream] 用户取消，流结束')
           writer.close()
           return
+        }
+
+        // 轮次跑满 MAX_TOOL_ROUNDS 时走这里：没有"最后一轮无工具调用"的收尾，
+        // 但 finalAnswerContent 已在每轮更新，落库的仍是最后一轮正文（不会为空）
+        if (round >= MAX_TOOL_ROUNDS) {
+          console.warn(
+            `[Stream] 工具调用达到上限 ${MAX_TOOL_ROUNDS} 轮，按最后一轮回答收尾（不再继续调用工具）`
+          )
         }
 
         // 处理图片结果
