@@ -393,12 +393,16 @@ export const KnowledgeRepository = {
 
   /**
    * 写回文档进度（异步任务每完成一批 embedding 调一次）
+   *
+   * @returns applied=false 表示文档已经不存在了（用户删了文档或整个知识库）。
+   *          入库过程中据此提前停手，不要继续为已经删掉的目标调用 embedding API。
    */
   async updateDocumentProgress(
     id: string,
     data: { processedChunks?: number; status?: string }
-  ): Promise<void> {
-    await prisma.knowledgeDocument.updateMany({ where: { id }, data })
+  ): Promise<{ applied: boolean }> {
+    const result = await prisma.knowledgeDocument.updateMany({ where: { id }, data })
+    return { applied: result.count > 0 }
   },
 
   /**

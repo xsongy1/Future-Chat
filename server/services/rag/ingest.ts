@@ -19,6 +19,7 @@ import {
   toVectorLiteral,
 } from '@/server/repositories/knowledge.repository'
 import { detectVectorCapability, isVectorColumnCompatible } from './vector-store'
+import { RagTaskAbortedError } from './errors'
 
 /** 单次入库的文档最大 chunk 数（防止超大文件把库和上下文打爆） */
 export const MAX_CHUNKS_PER_DOCUMENT = 500
@@ -128,6 +129,16 @@ export async function ingestDocument(params: IngestParams): Promise<IngestResult
         : undefined,
     })
   } catch (error) {
+    // 中止：目标文档/任务已经不存在（用户删了，或任务被别的 worker 抢走）。
+    // 这时候不能当成"向量化失败"——记失败原因会写到一条不存在的文档上，
+    // 更糟的是如果只是任务被抢走，把文档标成 failed 会误伤另一个 worker 正在做的工作。
+    //
+    // 这里刻意不打日志：调用方（worker）会把任务 id 与"已处理 N/M 条"一起记一条，
+    // 两层各打一次只会让同一件事在日志里出现两遍。这里只负责"不误判为失败"。
+    if (error instanceof RagTaskAbortedError) {
+      throw error
+    }
+
     const msg = error instanceof Error ? error.message : '未知错误'
     await recordFailure(params, `文本向量化失败：${msg}`)
     throw new Error(`文本向量化失败：${msg}`)

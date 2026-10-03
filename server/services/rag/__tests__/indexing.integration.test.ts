@@ -445,4 +445,65 @@ describe.runIf(ENABLED)('RagTask 队列（数据库集成）', () => {
     expect(row?.status).toBe('queued')
     expect(row?.workerId).toBeNull()
   })
+
+  /**
+   * 入库/重建会在每批向量化之间确认"我还在为谁干活"：两个信号任一失效就提前中止，
+   * 不再为已经不存在的目标调用 embedding API（那是纯粹的白花钱）。
+   * 这里固定住这两个信号本身——它们是"提前停手"能成立的前提。
+   */
+  it('目标被删或任务被抢时，心跳与进度写回都会报告 applied=false', async () => {
+    // 1. 心跳：持有者能续锁，别人不能
+    //
+    // priority 给到 100：claimNext 按「priority DESC, createdAt ASC」领取，
+    // 而同一文件里"僵死回收"用例会把自己的任务重新排队，不提高优先级就会领到那一条
+    // （这正是本用例第一次跑失败的原因——测试自身的假设错了，不是实现的问题）。
+    const task = await RagTaskRepository.enqueue({
+      type: 'ingest',
+      userId,
+      knowledgeBaseId: baseId,
+      payload: {},
+      priority: 100,
+    })
+    created.push(task.id)
+
+    const claimed = await RagTaskRepository.claimNext('worker-abort')
+    expect(claimed?.id).toBe(task.id)
+
+    expect((await RagTaskRepository.heartbeat(task.id, 'worker-abort')).applied).toBe(true)
+    // 不是持有者 → 不能续锁（防止两个 worker 同时认为自己在干活）
+    expect((await RagTaskRepository.heartbeat(task.id, 'worker-other')).applied).toBe(false)
+
+    // 2. 任务被回收重排（回到 queued）后，旧 worker 的心跳必须失效
+    await prisma.ragTask.update({
+      where: { id: task.id },
+      data: { status: 'queued', workerId: null },
+    })
+    expect((await RagTaskRepository.heartbeat(task.id, 'worker-abort')).applied).toBe(false)
+
+    // 3. 任务行被删（知识库被删会级联删掉它）后同样失效
+    await prisma.ragTask.delete({ where: { id: task.id } })
+    expect((await RagTaskRepository.heartbeat(task.id, 'worker-abort')).applied).toBe(false)
+
+    // 4. 进度写回：文档在 → applied=true；文档被删 → applied=false
+    const document = await prisma.knowledgeDocument.create({
+      data: {
+        knowledgeBaseId: baseId,
+        name: 'abort-probe.md',
+        type: 'md',
+        size: 1,
+        status: 'processing',
+        chunkCount: 2,
+      },
+    })
+    expect(
+      (await KnowledgeRepository.updateDocumentProgress(document.id, { processedChunks: 1 }))
+        .applied
+    ).toBe(true)
+
+    await prisma.knowledgeDocument.delete({ where: { id: document.id } })
+    expect(
+      (await KnowledgeRepository.updateDocumentProgress(document.id, { processedChunks: 2 }))
+        .applied
+    ).toBe(false)
+  }, 30_000)
 })

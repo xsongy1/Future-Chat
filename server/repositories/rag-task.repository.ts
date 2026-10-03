@@ -96,15 +96,26 @@ export const RagTaskRepository = {
 
   /**
    * 心跳：长任务（大文档向量化可达数十秒）定期续锁
+   *
+   * @returns applied=false 表示这条任务已经不在本 worker 名下：
+   *          要么被用户连知识库一起删了（级联删任务行），要么被回收重排给了别的 worker。
+   *          两种情况都意味着"不该继续做、也不该再花钱"，调用方据此提前中止
+   *          （见 server/services/rag/errors.ts 里的 RagTaskAbortedError）。
    */
-  async heartbeat(id: string, workerId: string, progress?: number): Promise<void> {
-    await prisma.ragTask.updateMany({
-      where: { id, workerId },
+  async heartbeat(
+    id: string,
+    workerId: string,
+    progress?: number
+  ): Promise<{ applied: boolean }> {
+    const result = await prisma.ragTask.updateMany({
+      // status 也纳入条件：已被回收重排（回到 queued）的任务不该被旧 worker 续锁
+      where: { id, workerId, status: 'running' },
       data: {
         lockedAt: new Date(),
         ...(progress === undefined ? {} : { progress }),
       },
     })
+    return { applied: result.count > 0 }
   },
 
   /**

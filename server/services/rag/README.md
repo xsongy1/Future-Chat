@@ -131,6 +131,20 @@ idf(t) = ln(1 + (N − df(t) + 0.5) / (df(t) + 0.5))
 - `attempts` 在领取时自增（不是失败时才加）：任务执行中崩溃也不会无限重试。
 - 失败按 `5s → 10s → 20s …`（上限 300s）退避重排，超过 `maxAttempts` 才置 `failed`，此时才把文档标成 `failed`——重试期间保持 `processing`，否则用户会看到"失败 → 重试中 → 成功"来回跳。
 - 长任务每 15s 心跳续 `lockedAt`；`lockedAt` 超过 `RAG_WORKER_LOCK_TIMEOUT_MS`（默认 120s）没续的任务会被回收重排，避免部署重启后任务永久卡在 `running`。
+- **每批向量化之间会确认"我还在为谁干活"**：心跳（`RagTaskRepository.heartbeat`）与文档进度写回
+  （`KnowledgeRepository.updateDocumentProgress`）都会返回 `applied`。任一为 false 就抛
+  `RagTaskAbortedError` 提前停手——用户删掉文档/知识库后任务行会被级联删除，
+  继续跑只是在为一个不存在的目标付 embedding 费用。**中止不算失败**：不重试、不写失败状态
+  （也写不上），只记一条日志。实测：131 个 chunk 的文档在跑完第 1 批后删库，实际只向量化了
+  64 条就停手（省下约一半），日志出现"已中止…已处理 N/M 条"。
+- **每批向量化完成后立刻回写 `EmbeddingCache`**（而不是等整个循环跑完）：这批向量已经付过钱了，
+  攒到最后再写的话，一旦中途抛错（最典型就是上面的中止）这些向量会连同缓存一起丢掉，
+  下次重传/重建还要再付一次。逐批写 + `skipDuplicates` 让中断可续、不重复付费。
+- ⚠️ **生产日志里看不到 `console.log`**：`next.config.ts` 的 `removeConsole` 对**服务端代码同样生效**，
+  只保留 `error` / `warn`（实测：`[RAG] 文档入库完成`、`检索完成`、`灰度期检索` 在生产构建里都被删除，
+  而 `精排失败`、`不在本 worker 名下` 这类 warn 保留）。因此**运维必须看到的信息一律用 warn/error**
+  （例如"入库已中止"）；常规运行日志只在 `pnpm dev` 下可见。需要生产也能看到常规日志时，
+  改 `next.config.ts` 的 `removeConsole` 配置（会把客户端 console 一起放开，需权衡）。
 - **为什么不引 Redis/BullMQ**：任务粒度是"一次上传/一次重建"，量级远达不到需要独立中间件的程度，而 `SKIP LOCKED` 已经提供了所需的原子领取语义，少一个有状态组件就少一套部署与运维成本。
 
 ### 2.5 worker 的启动方式（以及为什么不用 instrumentation）

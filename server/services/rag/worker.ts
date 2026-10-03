@@ -26,6 +26,7 @@ import { KnowledgeRepository } from '@/server/repositories/knowledge.repository'
 import { UserRepository } from '@/server/repositories/user.repository'
 import { ingestDocument } from './ingest'
 import { rebuildDocumentEmbeddings } from './maintenance'
+import { RagTaskAbortedError } from './errors'
 
 /** 轮询间隔：入库通常几十秒内完成，2s 的延迟用户感知不到，也不会打满数据库 */
 const DEFAULT_POLL_MS = 2000
@@ -138,17 +139,30 @@ export async function executeTask(task: RagTaskRow): Promise<boolean> {
         // 失败状态由 worker 统一落：任务还有重试次数时不能先把文档标成 failed，
         // 否则用户会看到"失败 → 重试中 → 成功"的状态来回跳
         deferFailure: true,
+        // 每批向量化之间确认"我还在为谁干活"：目标没了就抛中止信号，
+        // 不再为已经删掉的东西继续调用 embedding API（那是纯粹的白花钱）
         onProgress: async ({ processed, total }) => {
           const progress = total > 0 ? Math.round((processed / total) * 100) : 0
-          await Promise.all([
+          const [taskAlive, documentAlive] = await Promise.all([
             RagTaskRepository.heartbeat(task.id, workerId, progress),
             task.documentId
               ? KnowledgeRepository.updateDocumentProgress(task.documentId, {
                   processedChunks: processed,
                   status: 'processing',
                 })
-              : Promise.resolve(),
+              : Promise.resolve({ applied: true }),
           ])
+
+          if (!taskAlive.applied) {
+            throw new RagTaskAbortedError(
+              `任务已不在本 worker 名下（文档/知识库被删除，或任务已被回收重排）；已处理 ${processed}/${total} 条`
+            )
+          }
+          if (!documentAlive.applied) {
+            throw new RagTaskAbortedError(
+              `文档已被删除；已处理 ${processed}/${total} 条（剩余批次不再调用 embedding）`
+            )
+          }
         },
       })
     } else if (task.type === 'rebuild') {
@@ -169,8 +183,12 @@ export async function executeTask(task: RagTaskRow): Promise<boolean> {
         targetModel: payload.targetModel,
         batchSize: payload.batchSize,
         maxChunks: payload.maxChunks,
-        onProgress: ({ rebuilt }) => {
-          void RagTaskRepository.heartbeat(task.id, workerId, rebuilt).catch(() => {})
+        // 重建同样按批确认存活：知识库被删掉后继续重建也是白花钱
+        onProgress: async ({ rebuilt }) => {
+          const alive = await RagTaskRepository.heartbeat(task.id, workerId, rebuilt)
+          if (!alive.applied) {
+            throw new RagTaskAbortedError('重建任务已不在本 worker 名下')
+          }
         },
       })
     } else {
@@ -185,6 +203,18 @@ export async function executeTask(task: RagTaskRow): Promise<boolean> {
     }
     return true
   } catch (error) {
+    // 中止不是失败：目标已经被删（或任务已被抢走），没有行可写、也不该重试。
+    // 用 warn 而不是 log 是有意的：next.config.ts 的 removeConsole 会把**服务端**的
+    // console.log 也从生产构建里删掉（只保留 error/warn），用 log 的话这条信息
+    // 在生产的 docker logs 里根本看不到——而"任务被中止"恰恰是运维需要知道的事。
+    if (error instanceof RagTaskAbortedError) {
+      console.warn(
+        `[RAG] 任务 ${task.id}（${task.type}，文档 ${task.documentId ?? '-'}）已中止：` +
+          `${error.reason} —— 不再继续消耗 embedding 额度`
+      )
+      return false
+    }
+
     const message = error instanceof Error ? error.message : String(error)
     state().lastError = message
 

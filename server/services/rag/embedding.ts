@@ -107,6 +107,8 @@ export async function embedTexts(params: {
   const pending = [...pendingHashToText.entries()]
   const newVectors: Array<{ contentHash: string; model: string; embedding: number[]; dim: number }> =
     []
+  /** 真正调用 API 的累计条数：newVectors 每批都会被清空，不能用它的长度当计数 */
+  let embeddedTotal = 0
 
   for (let i = 0; i < pending.length; i += EMBEDDING_BATCH_SIZE) {
     signal?.throwIfAborted()
@@ -134,23 +136,31 @@ export async function embedTexts(params: {
       })
     })
 
+    // 每批立刻回写缓存，而不是等整个循环跑完再写。
+    // 原因：这一批的向量**已经付过钱了**，攒到最后再写的话，一旦中途抛错
+    // （最典型的就是"文档被删 → 主动中止"）这些向量会连同缓存一起丢掉，
+    // 下次重建/重传还得再付一次。逐批写 + skipDuplicates 让中断可续、不重复付费。
+    // 写失败不影响本次入库，只少一次复用机会，因此只告警不抛出。
+    const batchVectors = newVectors.splice(0, newVectors.length)
+    if (batchVectors.length > 0) {
+      embeddedTotal += batchVectors.length
+      try {
+        await EmbeddingCacheRepository.saveMany(batchVectors)
+      } catch (error) {
+        console.warn(
+          '[RAG] embedding 缓存写入失败（不影响本次入库）:',
+          error instanceof Error ? error.message : error
+        )
+      }
+    }
+
     // 已完成的批次数（含缓存命中的部分按整体进度计）
+    // 放在缓存回写之后：调用方的进度回调可能抛中止信号，先落缓存再报进度，
+    // 这样"已经付过钱的批次"不会因为中止而丢失
     await onProgress?.(
       Math.min(i + EMBEDDING_BATCH_SIZE, pending.length),
       pending.length
     )
-  }
-
-  // 3. 回写缓存（写失败不影响本次入库，只少一次复用机会）
-  if (newVectors.length > 0) {
-    try {
-      await EmbeddingCacheRepository.saveMany(newVectors)
-    } catch (error) {
-      console.warn(
-        '[RAG] embedding 缓存写入失败（不影响本次入库）:',
-        error instanceof Error ? error.message : error
-      )
-    }
   }
 
   if (cached.length > 0) {
@@ -179,7 +189,7 @@ export async function embedTexts(params: {
     model,
     dim: dim > 0 ? dim : (embeddings[0]?.length ?? 0),
     cacheHits: hashes.filter((h) => cached.some((c) => c.contentHash === h)).length,
-    embeddedCount: newVectors.length,
+    embeddedCount: embeddedTotal,
   }
 }
 
