@@ -168,23 +168,83 @@ export function KnowledgeBaseDialog({
     }
   }
 
-  /** 上传文档并入库（同步等待解析 + 向量化结果） */
+  /**
+   * 上传文档
+   *
+   * 入库是异步的：接口返回 202 + status=pending，向量化在后台 worker 里跑。
+   * 因此这里不能像以前那样直接 toast「文档已入库 · N 个片段」——
+   * 那时 chunkCount 还是 0，等于对用户撒谎。改为轮询到终态再给结论，
+   * 轮询过程中就地更新列表，让用户看到"入库中 3/12"这种真实进度。
+   */
   const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     // 允许重复选择同一个文件
     event.target.value = ''
     if (!file || !selectedId) return
 
+    const knowledgeBaseId = selectedId
     setUploadError(null)
     setIsUploading(true)
     try {
-      const doc = await KnowledgeAPI.uploadDocument(selectedId, file)
-      await refreshDocuments(selectedId)
+      const { document: uploaded, deduplicated, queued } =
+        await KnowledgeAPI.uploadDocument(knowledgeBaseId, file)
+      await refreshDocuments(knowledgeBaseId)
       await refreshBases()
+
+      if (deduplicated && uploaded.status === 'ready') {
+        toast({
+          title: '内容相同的文档已存在',
+          description: `${uploaded.name} · 未重复入库`,
+        })
+        return
+      }
+
+      if (!queued && uploaded.status === 'ready') {
+        // 理论上不会走到（异步化后 ready 只会出现在去重分支），留作兜底
+        toast({
+          title: '文档已入库',
+          description: `${uploaded.name} · ${uploaded.chunkCount} 个片段`,
+        })
+        return
+      }
+
       toast({
-        title: '文档已入库',
-        description: `${doc.name} · ${doc.chunkCount} 个片段`,
+        title: '已开始后台入库',
+        description: `${uploaded.name} · 正在切分与向量化，完成后会自动刷新`,
       })
+
+      const settled = await KnowledgeAPI.waitForDocument(
+        knowledgeBaseId,
+        uploaded.id,
+        {
+          onProgress: (doc) => {
+            // 就地把最新状态写进列表，用户不需要手动刷新
+            setDocuments((prev) =>
+              prev.map((item) => (item.id === doc.id ? { ...item, ...doc } : item))
+            )
+          },
+        }
+      )
+
+      await refreshDocuments(knowledgeBaseId)
+      await refreshBases()
+
+      if (settled?.status === 'ready') {
+        toast({
+          title: '文档已入库',
+          description: `${settled.name} · ${settled.chunkCount} 个片段`,
+        })
+      } else if (settled?.status === 'failed') {
+        const message = settled.error || '入库失败'
+        setUploadError(message)
+        toast({ title: '文档入库失败', description: message, variant: 'destructive' })
+      } else {
+        // 轮询超时：任务可能还在跑（大文档 + 上游限流），如实告知而不是假装成功
+        toast({
+          title: '入库仍在进行',
+          description: `${uploaded.name} · 可稍后重新打开查看状态`,
+        })
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '未知错误'
       setUploadError(message)
@@ -368,12 +428,21 @@ export function KnowledgeBaseDialog({
                     <span className="shrink-0 text-xs text-emerald-600 dark:text-emerald-400">
                       已入库 · {doc.chunkCount} 个片段
                     </span>
-                  ) : (
+                  ) : doc.status === 'failed' ? (
                     <span
                       className="shrink-0 text-xs text-destructive"
                       title={doc.error || '处理失败'}
                     >
                       处理失败
+                    </span>
+                  ) : (
+                    // pending / processing：后台正在向量化，不能显示成"处理失败"
+                    // （异步化之后，刚上传的文档必然先处于这个状态）
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      入库中
+                      {doc.chunkCount > 0
+                        ? ` ${doc.processedChunks ?? 0}/${doc.chunkCount}`
+                        : '…'}
                     </span>
                   )}
                   <Button

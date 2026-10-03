@@ -12,6 +12,7 @@
 | `development-guide.md` | 开发规范：追踪头、质量门禁命令、联调角色 |
 | `deployment-guide.md` | 部署说明：测试环境端口、数据重建时间、日志保留天数 |
 | `run-tests.mjs` | 导入 + 8 个用例自动验收脚本（可选，也可手动测） |
+| `upload-contract.mjs` | 上传契约核对：异步入库的状态机、响应字段、内容哈希去重 |
 
 ---
 
@@ -152,19 +153,33 @@ RagTask              3 条   status = succeeded（异步入库的任务记录）
 实测：两个开关都关闭时，模型点名 `web_search` / `knowledge_search`，后端照样执行并返回了真实结果。
 → 用例 6 在"模型正常作答"的路径上能通过；如果你在问题里直接点名工具名，就可能复现出被绕过的情况。
 
-### 3. 相似度阈值是个真实取舍
+### 3. 阈值不再是"一个全局常数"（这段历史值得看）
 
-`RAG_MIN_SCORE` 默认 0.5（`server/services/rag/index.ts:54`）。本知识库实测：
+早期实现用一个标定出来的绝对相似度阈值（余弦 0.45 / 0.5）。本知识库的实测很能说明问题：
+
 - 明确问题（内部代号 / 端口）：0.62 ~ 0.79，稳过
-- 含糊问题（"这个知识库的负责人是谁？"）：最高只有 **0.451**，在 0.5 阈值下会被过滤掉 → 用例 3 可能检索到 0 条
+- 含糊问题（"这个知识库的负责人是谁？"）：最高只有 **0.451** → 在 0.5 阈值下被整条过滤，**用例 3 检索到 0 条**
 
-可用环境变量微调，不用改代码：在 `.env` 里加 `RAG_MIN_SCORE=0.45` 后重启应用即可。
+相关查询的 Top-1 落在 0.4465~0.6320，不相关查询落在 0.1970~0.4805，**两个分布重叠**——也就是说阈值怎么选都错：
+调低放进噪声，调高误杀正解。问题不在"阈值调得准不准"，而在单路余弦分在小语料上分辨力不足。
+
+现在改成：向量（pgvector）**+** BM25 词法两路召回 → RRF 融合 → cross-encoder 精排 → 按"当前问题的最好命中"
+取相对比例切尾。效果（同一知识库、同一问题实测）：
+
+| 用例 3「这个知识库的负责人是谁？」 | 结果 |
+| --- | --- |
+| 旧实现（绝对阈值 0.5） | 检索 **0 条** → 答不出 |
+| 现在 | 检索 **1 条**（`project-overview.md`，精排分 0.59+）→ 正确答出 岑知远 |
+
+`RAG_MIN_SCORE` 已废弃（仅作为 `RAG_VECTOR_MIN_SCORE` 的别名，且只在精排不可用时生效）；
+要调检索行为请看 `server/services/rag/README.md` 里的环境变量表。
 
 ### 4. 其它
 
-- **没有知识库管理 UI**：不能建库、不能上传、不能删文档，也不能指定"只检索某个知识库"（开关是"全部我的知识库"）。
+- **有知识库管理 UI**：输入框旁的知识库弹窗可建库 / 删库 / 上传 / 删文档，也可指定"只检索某个知识库"。
 - **运行中的容器可能落后于源码**：本次测试的 3000 端口是 Docker 镜像（`docker-compose.yml` 里 `NODE_ENV: production`），改完源码需要重新 `docker compose up -d --build` 才生效。
-- **入库是同步的**：上传接口要等 embedding 全部返回才响应，大文件会卡几十秒。
+- **入库是异步的**：上传接口只解析并入队（`202 + status=pending`），切分 / 向量化 / 建索引由后台 worker 执行；
+  弹窗会在上传后轮询并显示"入库中 n/m"，也可以直接看 `GET /api/knowledge/{id}/documents`。
 
 ---
 
@@ -175,7 +190,7 @@ RagTask              3 条   status = succeeded（异步入库的任务记录）
 | 浏览器 Network | `POST /api/chat`（响应类型 `text/event-stream`），在 EventStream/响应体里找 `"type":"tool_call"`、`"name":"knowledge_search"`、`"type":"tool_result"`、`"knowledgeSources"`、`"type":"answer"` |
 | 浏览器界面 | 回答上方出现"正在查询知识库..."（带旋转图标）→ 完成后变成"已检索 N 个知识片段" + `来源:` 后面的文件名标签（如 `project-overview.md`） |
 | 服务端日志 | `[ToolRegistry] Registered tool: knowledge_search`、`[ChatService] Enabled tools: [...]`、`[Stream] 启动工具: knowledge_search`、`[RAG] 文档入库完成: xxx.md → N 个片段 (BAAI/bge-m3)` |
-| 数据库 | `KnowledgeBase` / `KnowledgeDocument` / `DocumentChunk.embedding`（1024 维 `double precision[]`）；本项目的相似度是在 Node 应用层算的，**没有 pgvector** |
+| 数据库 | `KnowledgeBase` / `KnowledgeDocument` / `DocumentChunk`：`embedding`（1024 维 `double precision[]`）+ `embeddingVec`（`vector(1024)`，走 HNSW 的镜像列）+ `tsv`（BM25 词项，GIN）。一句话概览用 `pnpm rag:status` |
 
 ---
 

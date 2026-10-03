@@ -113,28 +113,31 @@ pnpm docker:down
 
 > ⚠️ Docker 相关注意点（真实行为，非理想状态）：
 > - 应用容器跑的是**构建镜像时的源码**。`docker compose up -d`（不带 `--build`）不会重新构建，容易出现"改了代码但线上没变"。
-> - postgres 镜像已从 `postgres:16-alpine` 换成 **`pgvector/pgvector:pg16`**（RAG 需要 `vector` 类型 + HNSW 索引）。镜像基于同一 PostgreSQL 16 大版本，数据卷可直接沿用；`docker compose up -d postgres` 重建容器后，用 `psql -c 'CREATE EXTENSION IF NOT EXISTS vector'`（或让 RAG 迁移里的 `DO` 块自动完成）即可。
+> - postgres 镜像已从 `postgres:16-alpine` 换成 **`pgvector/pgvector:pg16`**（RAG 需要 `vector` 类型 + HNSW 索引）。镜像基于同一 PostgreSQL 16 大版本，数据卷可直接沿用；`CREATE EXTENSION vector` 由 RAG 迁移里的 `DO` 块自动完成。
 > - 镜像里**不会自动执行 `prisma migrate deploy`**：数据卷为空时表不会被创建，需要手工 `docker compose exec app npx prisma migrate deploy`（或先在宿主迁移好再用同一数据卷）。
-> - `docker-compose.yml` 里显式写了 `name: sky-chat`，用于保住既有数据卷（`sky-chat_postgres_data`）。**工作区目录已经改名为 `Future-Chat`，所以这一行现在是唯一把「新路径」和「旧数据卷」绑在一起的锚点——既不能删也不能改。** 删掉后 compose 会按目录名推断成 `future-chat`，转而去找并不存在的 `future-chat_postgres_data`，于是创建一个空卷：用户、会话、消息、RAG 文档会「看起来消失」（数据其实完好地留在旧卷里，只是没被挂载）。
-> - 运行中的容器是从旧目录启动的，bind mount（`generated` 挂载点）与 `com.docker.compose.project.working_dir` 仍指向旧路径。**在 `Future-Chat` 目录下重新执行一次 `docker compose up -d` 即可修正**——因为有 `name: sky-chat`，compose 会复用既有容器与数据卷，不会丢数据。
+> - **compose 项目名已从 `sky-chat` 改成 `future-chat`**（与仓库名一致）。项目名决定数据卷名（`${项目名}_postgres_data`）与镜像名（`${项目名}-<service>`），所以改名不是改一行字那么简单：
+>   - 当前数据卷是 `future-chat_postgres_data`，由旧卷 `sky-chat_postgres_data` **逐文件复制**而来（迁移步骤见下）。
+>   - 旧卷 `sky-chat_postgres_data` **仍然保留着**作为迁移前的备份。确认新卷数据无误并稳定运行一段时间后，可用 `docker volume rm sky-chat_postgres_data` 回收。
+>   - 镜像现在是 `future-chat-app`（旧的 `sky-chat-app` 可以删掉）。
+> - bind mount（`generated` 挂载点）与 `com.docker.compose.project.working_dir` 都跟随当前工作目录，**在仓库根目录执行 `docker compose up -d` 即可**。
 > - 旧目录若已被删除，该挂载点会变成**死挂载**：容器里 `/app/public/generated` 根本不存在，AI 生成图片会**静默失败**（不报错，只是图没了）。核验与修复：
 >   ```bash
 >   # 看挂载点指向哪里（Source 应为 F:\desk\ChatAI\Future-Chat\generated）
 >   docker inspect future-chat-app --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
->   # 在 Future-Chat 目录重新 up，重建容器即修正挂载
+>   # 在仓库根目录重新 up，重建容器即修正挂载
 >   docker compose up -d
 >   ```
 >
-> 真要改名，正确顺序是**先迁数据卷、再改 YAML**，而不是直接改 `name:`：
+> 再遇到需要改项目名（或迁移到新机器）时，正确顺序永远是**先迁数据卷、再改 YAML**：
 >
 > ```bash
-> docker compose -p sky-chat down                    # 停服务，保留数据卷
-> docker volume create future-chat_postgres_data
-> docker run --rm -v sky-chat_postgres_data:/from \
->                -v future-chat_postgres_data:/to alpine cp -av /from/. /to/
-> # ↑ 到这里再改 docker-compose.yml 的 name: 为 future-chat
+> docker compose -p <旧项目名> down                 # 停服务，保留数据卷（注意不要加 -v）
+> docker volume create <新项目名>_postgres_data
+> docker run --rm -v <旧项目名>_postgres_data:/from \
+>                -v <新项目名>_postgres_data:/to alpine cp -av /from/. /to/
+> # ↑ 确认复制完成后再改 docker-compose.yml 的 name:，然后
 > docker compose up -d
-> docker volume rm sky-chat_postgres_data            # 验证数据完好后再删旧卷
+> # 验证数据（用户/会话/知识库条数）无误后，再考虑删旧卷
 > ```
 
 ## 环境变量
@@ -202,8 +205,8 @@ pnpm clean:logs              # 预览待清理的 console.log
 pnpm clean:logs --write      # 实际删除
 ```
 
-> 历史文档中的 `pnpm db:reset` **不存在**；`pnpm test` 覆盖 `server/**/__tests__`（RAG chunker / tokenizer / BM25 / 融合 / 精排 / 检索编排）与 `packages/future-monitor-sdk/tests`，`features/**/__tests__` 尚未纳入。
-> RAG 的数据库集成测试默认跳过，需要真实库时用 `RAG_DB_TEST=1 pnpm test`（会在库里建临时知识库并在结束时删除）。
+> 历史文档中的 `pnpm db:reset` **不存在**；`pnpm test` 覆盖 `server/**/__tests__`（RAG chunker / tokenizer / RRF 融合 / 精排 / 检索编排）与 `packages/future-monitor-sdk/tests`，`features/**/__tests__` 尚未纳入。
+> RAG 的数据库集成测试默认跳过，需要真实库时用 `RAG_DB_TEST=1 pnpm test`（会在库里建临时知识库并在结束时删除）——BM25 打分、pgvector 召回、2000 上限回归与队列语义都在这里验证。
 
 ## 项目结构
 
@@ -269,6 +272,7 @@ test-rag/                     # RAG 测试知识库 + 验收/回归脚本
 ```bash
 node test-rag/run-tests.mjs      # 导入 3 个测试文档并跑 8 个 RAG 用例（23 项断言）
 node test-rag/regression.mjs     # 全面回归（含工具开关、权限隔离、默认模型）
+node test-rag/upload-contract.mjs # 上传契约：异步入库状态机、响应字段、内容哈希去重
 node test-rag/guard-check.mjs    # 定向验证「关闭知识库后工具被拒绝执行」
 node --experimental-strip-types test-rag/merge-check.mjs   # 知识库来源合并逻辑单测
 

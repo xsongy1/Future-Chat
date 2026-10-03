@@ -1,11 +1,15 @@
 # Future-Chat Docker Compose 配置
 # 包含 PostgreSQL 数据库和 Next.js 应用
 #
-# 注意：这里显式固定了 compose 项目名（name:），而不是让它取目录名。
-# 原因是 postgres 的数据卷名字是 `${项目名}_postgres_data`：
-# 一旦项目名变化，compose 会认为这是一个全新项目并创建一个空数据卷，现有数据"看起来"就丢了。
+# 关于项目名（name:）：它决定了两件东西的最终名字——
+#   1. 数据卷：`${项目名}_postgres_data`
+#   2. 镜像：`${项目名}-<service>`（不显式写 image: 时）
+# 因此项目名从 sky-chat 改成 future-chat 时，**必须先把数据卷迁过去**，
+# 否则 compose 会当成一个全新项目、创建一个空卷，现有数据"看起来"就丢了
+# （数据其实还在旧卷 sky-chat_postgres_data 里，只是没被挂载）。
+# 本次迁移的实际做法见 README「Docker 相关注意点」。
 
-name: sky-chat
+name: future-chat
 
 services:
   # PostgreSQL 数据库（带 pgvector 扩展）
@@ -58,5 +62,10 @@ services:
         condition: service_healthy
 
 volumes:
+  # 声明为 external：这个卷是「手工迁移」出来的（从 sky-chat_postgres_data 逐文件复制），
+  # 不带 compose 自己的标签。不声明 external 时 compose 会警告
+  # "volume was not created by Docker Compose"，并在极端情况下按自己的理解重建它——
+  # 对数据库卷来说那等于数据全丢。显式声明后 compose 只负责挂载，不负责创建/删除。
   postgres_data:
-    driver: local
+    external: true
+    name: future-chat_postgres_data

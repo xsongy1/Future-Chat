@@ -166,7 +166,7 @@ prisma.documentChunk.findMany({ take: 2000, orderBy: { createdAt: 'desc' } })
 | `take: 2000 + createdAt desc` 取候选 | 2000 条，**不含正确答案** | — |
 | 分页精确扫描 | — | 扫描 2401 条，答案排名第 1 |
 | pgvector KNN | — | 答案排名第 1（cos=1） |
-| BM25（唯一字面词项） | — | 2500 条无关语料中答案排名第 1 |
+| BM25（唯一字面词项） | — | 2401 条语料中答案排名第 1（并有数值交叉验证，见 §1.2） |
 
 ---
 
@@ -279,4 +279,6 @@ POST /api/knowledge/{id}/rebuild
 - **HNSW 是近似的**：召回由 `ef_search` 与索引结构决定，不是精确 top-K；这是向量检索的固有取舍，靠"融合 + 精排 + 相对阈值"补足。
 - **精排会计费**：每次检索多一次 `/v1/rerank` 调用（按 query-文档对计费），`RAG_FUSION`/`RAG_RERANK_TOP_N` 是成本闸门。
 - **缓存无淘汰**：`EmbeddingCache` 只增不减，`lastUsedAt` 与 `hits` 已记录，但目前没有 TTL 清理任务（数据量级很小，暂不必要）。
-- **前端**：知识库管理弹窗已支持轮询状态显示；本次未改动 UI 组件本身（`features/knowledge`），仅接口契约变为"202 + 进度"。若页面出现"上传后一直转圈"，先看 `GET /api/knowledge/{id}/documents` 的 `status`。
+- **前端**：知识库弹窗（`features/knowledge`）已适配异步入库——上传后立即轮询文档状态，
+  把进度就地显示为"入库中 n/m"，到终态才提示"已入库 · N 个片段"或失败原因
+  （`KnowledgeAPI.waitForDocument`）。注意 `pending`/`processing` 是正常中间态，不是失败。

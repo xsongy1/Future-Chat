@@ -30,10 +30,22 @@ export interface KnowledgeDocumentSummary {
   name: string
   type: string
   size: number
+  /** pending | processing | ready | failed */
   status: string
   error: string | null
   chunkCount: number
+  /** 已向量化完成的片段数（异步入库的进度，配合 chunkCount 显示） */
+  processedChunks?: number
   createdAt: string
+}
+
+/** 上传结果：入队与"内容相同未重复入库"区分开，UI 文案才不至于撒谎 */
+export interface UploadDocumentResult {
+  document: KnowledgeDocumentSummary
+  /** 是否命中了内容哈希去重（后端未重新入库） */
+  deduplicated: boolean
+  /** 是否已入队等待后台向量化（ready 的文档为 false） */
+  queued: boolean
 }
 
 /** 解析服务端 { error: '...' } 响应，拿不到就给个兜底文案 */
@@ -82,16 +94,19 @@ export const KnowledgeAPI = {
   },
 
   /**
-   * 上传文档并入库
+   * 上传文档并入队
    *
-   * 后端是【同步】处理：请求返回时已经完成解析、切分、向量化与落库，
-   * 所以前端只需要一个"上传中"状态，不需要轮询进度。
+   * 后端是【异步】处理：接口只做解析与入队，返回 `202` + `status=pending`，
+   * 真正的切分 / 向量化 / 建索引由后台 worker 执行（见 server/services/rag/worker.ts）。
+   * 所以"上传成功"不等于"可以检索"，调用方必须轮询 listDocuments 直到
+   * status 变成 ready / failed —— 见 waitForDocument。
+   *
    * 格式限制与 server/services/rag/parse.ts 保持一致：仅 .txt / .md，单文件 ≤ 1MB。
    */
   async uploadDocument(
     knowledgeBaseId: string,
     file: File
-  ): Promise<KnowledgeDocumentSummary> {
+  ): Promise<UploadDocumentResult> {
     const formData = new FormData()
     formData.append('file', file)
 
@@ -99,9 +114,58 @@ export const KnowledgeAPI = {
       method: 'POST',
       body: formData,
     })
-    if (!res.ok) throw new Error(await readError(res, '文档上传失败'))
-    const data = (await res.json()) as { document: KnowledgeDocumentSummary }
-    return data.document
+    // 202 = 已入队；200 = 命中去重（返回已存在的文档）
+    if (!res.ok && res.status !== 202) {
+      throw new Error(await readError(res, '文档上传失败'))
+    }
+
+    const data = (await res.json()) as {
+      document: KnowledgeDocumentSummary
+      deduplicated?: boolean
+      queued?: boolean
+    }
+
+    return {
+      document: data.document,
+      deduplicated: data.deduplicated ?? false,
+      queued: data.queued ?? false,
+    }
+  },
+
+  /**
+   * 轮询等待某个文档完成异步入库
+   *
+   * @param options.onProgress - 每次拿到最新状态时回调（UI 用它显示"入库中 3/12"）
+   * @returns 终态文档（ready 或 failed）；超时返回最后一次看到的状态
+   */
+  async waitForDocument(
+    knowledgeBaseId: string,
+    documentId: string,
+    options: {
+      timeoutMs?: number
+      intervalMs?: number
+      onProgress?: (doc: KnowledgeDocumentSummary) => void
+    } = {}
+  ): Promise<KnowledgeDocumentSummary | null> {
+    const timeoutMs = options.timeoutMs ?? 180_000
+    const intervalMs = options.intervalMs ?? 1500
+    const deadline = Date.now() + timeoutMs
+
+    let latest: KnowledgeDocumentSummary | null = null
+
+    while (Date.now() < deadline) {
+      const documents = await this.listDocuments(knowledgeBaseId)
+      latest = documents.find((doc) => doc.id === documentId) ?? null
+
+      if (latest) {
+        options.onProgress?.(latest)
+        if (latest.status === 'ready' || latest.status === 'failed') return latest
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+
+    return latest
   },
 
   /** 删除单个文档（其 chunk 由数据库级联删除） */
