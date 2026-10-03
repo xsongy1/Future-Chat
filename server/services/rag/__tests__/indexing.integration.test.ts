@@ -14,6 +14,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/server/db/client'
 import { KnowledgeRepository } from '@/server/repositories/knowledge.repository'
 import { RagTaskRepository } from '@/server/repositories/rag-task.repository'
@@ -47,6 +48,41 @@ function fillerVector(i: number): number[] {
 }
 
 const QUERY_VECTOR = basisVector(0)
+
+/**
+ * BM25 参考实现（测试专用 oracle）
+ *
+ * 生产路径的 BM25 打分在 SQL 里（手写聚合，公式容易写错，而且没有数据库跑不了单测）。
+ * 所以这里用同一公式在应用层再实现一遍：把数据库里**真实的** tf / df / N / avgdl 喂进去，
+ * 断言 SQL 算出来的分数与它逐位一致——公式改写、常量漂移、聚合写错都会被抓住。
+ *
+ * 这段原本放在 server/services/rag/bm25.ts，但那里只被自己的单测引用，
+ * 真正该被验证的 SQL 反而没有验证（24 个用例全绿也不能说明线上的分数是对的）。
+ * 搬到测试里之后它才真正承担起"参考答案"的职责。
+ */
+const BM25_K1 = 1.2
+const BM25_B = 0.75
+
+function bm25Idf(df: number, total: number): number {
+  return Math.log(1 + (total - df + 0.5) / (df + 0.5))
+}
+
+function bm25Expected(params: {
+  tf: number
+  df: number
+  total: number
+  docLength: number
+  avgDocLength: number
+}): number {
+  const { tf, df, total, docLength, avgDocLength } = params
+  const lengthRatio = avgDocLength > 0 ? docLength / avgDocLength : 1
+  return (
+    (bm25Idf(df, total) * (tf * (BM25_K1 + 1))) /
+    (tf + BM25_K1 * (1 - BM25_B + BM25_B * lengthRatio))
+  )
+}
+
+const QUERY = '麒麟九号是什么？'
 
 describe.runIf(ENABLED)('RAG 索引与检索（数据库集成）', () => {
   let userId = ''
@@ -171,7 +207,7 @@ describe.runIf(ENABLED)('RAG 索引与检索（数据库集成）', () => {
   it('BM25 在 2000+ 无关语料中把唯一字面命中的片段排第一', async () => {
     const result = await searchByLexical({
       ownedBaseIds: [baseId],
-      query: '麒麟九号是什么？',
+      query: QUERY,
       limit: 5,
     })
 
@@ -179,6 +215,82 @@ describe.runIf(ENABLED)('RAG 索引与检索（数据库集成）', () => {
     expect(result.terms).toContain('麒麟')
     expect(result.hits[0]?.chunk.id).toBe(needleId)
     expect(result.hits[0]?.score).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('BM25 分数与参考实现逐位一致（数值交叉验证，而不只是排序）', async () => {
+    // 取出 SQL 打分用到的全部输入：命中词项的 tf、词项的 df、语料 N 与 avgdl、文档长度 dl
+    const rows = await prisma.$queryRaw<
+      Array<{ term: string; tf: number; df: number; n: number; avgdl: number; dl: number }>
+    >`
+      WITH scoped AS (
+        SELECT c.id, c."tokenCount", c."tsv"
+        FROM "DocumentChunk" c
+        JOIN "KnowledgeDocument" d ON d.id = c."documentId"
+        WHERE d."knowledgeBaseId" = ${baseId}
+          AND d.status = 'ready'
+          AND c."tsv" IS NOT NULL
+      ),
+      corpus AS (
+        SELECT COUNT(*)::float8 AS n, COALESCE(AVG("tokenCount"), 0)::float8 AS avgdl
+        FROM scoped
+      ),
+      term_df AS (
+        SELECT l.lexeme AS term, COUNT(*)::float8 AS df
+        FROM scoped s, LATERAL unnest(s."tsv") AS l
+        WHERE l.lexeme IN (${Prisma.join(queryTerms(QUERY))})
+        GROUP BY l.lexeme
+      ),
+      needle_tf AS (
+        SELECT l.lexeme AS term, cardinality(l.positions)::float8 AS tf
+        FROM scoped s, LATERAL unnest(s."tsv") AS l
+        WHERE s.id = ${needleId}
+          AND l.lexeme IN (${Prisma.join(queryTerms(QUERY))})
+      )
+      SELECT tf.term, tf.tf, df.df, c.n, c.avgdl, s."tokenCount"::float8 AS dl
+      FROM needle_tf tf
+      JOIN term_df df ON df.term = tf.term
+      CROSS JOIN corpus c
+      JOIN scoped s ON s.id = ${needleId}
+    `
+
+    expect(rows.length).toBeGreaterThan(0)
+
+    const expected = rows.reduce(
+      (sum, row) =>
+        sum +
+        bm25Expected({
+          tf: row.tf,
+          df: row.df,
+          total: row.n,
+          docLength: row.dl,
+          avgDocLength: row.avgdl,
+        }),
+      0
+    )
+
+    const result = await searchByLexical({
+      ownedBaseIds: [baseId],
+      query: QUERY,
+      limit: 5,
+    })
+    const actual = result.hits.find((hit) => hit.chunk.id === needleId)?.score ?? 0
+
+    // 1e-9 相对容差：SQL 与应用层都是 float8/double，公式一致就应当逐位吻合
+    expect(actual).toBeGreaterThan(0)
+    expect(Math.abs(actual - expected) / expected).toBeLessThan(1e-9)
+
+    // 反向保险：换一个 k1 再算一遍，结果必须与线上分数**不**一致——
+    // 否则"相等"可能只是公式对常量不敏感造成的假绿，常量漂移照样能溜过去
+    const wrongK1 = 3
+    const withWrongK1 = rows.reduce((sum, row) => {
+      const lengthRatio = row.avgdl > 0 ? row.dl / row.avgdl : 1
+      return (
+        sum +
+        (bm25Idf(row.df, row.n) * (row.tf * (wrongK1 + 1))) /
+          (row.tf + wrongK1 * (1 - BM25_B + BM25_B * lengthRatio))
+      )
+    }, 0)
+    expect(Math.abs(actual - withWrongK1) / withWrongK1).toBeGreaterThan(0.01)
   }, 30_000)
 
   it('tsv 里存的是 CJK 二元组（中文能被检索到）', async () => {

@@ -9,8 +9,7 @@
 | 检索编排（召回 → 融合 → 精排 → 阈值） | `server/services/rag/index.ts` |
 | 入库（切分 → 向量化 → 落库 → 建索引） | `server/services/rag/ingest.ts` |
 | 分词（CJK 二元组 + 拉丁词） | `server/services/rag/tokenizer.ts` |
-| BM25 参考实现（与 SQL 同公式） | `server/services/rag/bm25.ts` |
-| 词法通道（BM25 SQL 调用） | `server/services/rag/lexical.ts` |
+| BM25 常量、公式与取值理由 | `server/services/rag/lexical.ts`（生产实现就在 SQL 里） |
 | 向量通道（pgvector / 精确扫描） | `server/services/rag/vector-store.ts` |
 | RRF 融合与相对阈值 | `server/services/rag/fusion.ts` |
 | cross-encoder 精排 | `server/services/rag/rerank.ts` |
@@ -54,12 +53,17 @@ Postgres 默认分词器对中文会把整段当成一个词项，直接用 `to_
 
 这些词项经 `to_tsvector('simple', ...)` 写进 `DocumentChunk.tsv`（`tsvector` + GIN 索引），查询侧用同一分词器拼 `to_tsquery('simple', 'a | b | c')`。**两侧必须用同一个分词器**，否则永远匹配不上——`queryTerms()` 是唯一的词项来源，`toTsQueryInput()` 只是它的字符串形式。
 
-BM25 打分写在 SQL 里（`KnowledgeRepository.searchChunksByLexical`），公式与 `bm25.ts` 完全一致（那边是参考实现，单测用它交叉验证）：
+BM25 打分写在 SQL 里（`KnowledgeRepository.searchChunksByLexical`），这是生产路径上唯一的实现；常量与取值理由见 `lexical.ts` 头注释：
 
 ```
 score = Σ_t idf(t) · tf · (k1 + 1) / (tf + k1 · (1 − b + b · dl / avgdl))
 idf(t) = ln(1 + (N − df(t) + 0.5) / (df(t) + 0.5))
 ```
+
+> 这条公式**有数值交叉验证**：集成测试里有一份应用层 oracle，用数据库里真实的 tf / df / N / avgdl 算出期望分，
+> 断言 SQL 的返回值逐位一致，并用"换一个 k1 就必须对不上"作为反向保险。
+> （曾经存在过 `bm25.ts` 作为"参考实现"，但它只被自己的 24 个单测引用，真正要验证的 SQL 反而没被验证——
+> 那 24 个用例全绿也说明不了线上分数是对的，所以那份实现搬进了测试，成为真正的 oracle。）
 
 两个实现细节：
 

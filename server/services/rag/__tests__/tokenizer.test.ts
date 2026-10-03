@@ -236,21 +236,17 @@ describe('toTsQueryInput', () => {
     expect(toTsQueryInput('，。！？---')).toBeNull()
   })
 
-  it(`词项数不超过 MAX_QUERY_TERMS（${MAX_QUERY_TERMS}）`, () => {
-    const query = Array.from({ length: 100 }, (_, i) => `k${i}`).join(' ')
-    const input = toTsQueryInput(query)
-
-    expect(input).not.toBeNull()
-    const terms = (input ?? '').split(' | ')
-    expect(terms).toHaveLength(MAX_QUERY_TERMS)
-    expect(terms[0]).toBe('k0')
-    expect(terms[MAX_QUERY_TERMS - 1]).toBe(`k${MAX_QUERY_TERMS - 1}`)
-  })
-
+  // 词项上限/白名单/去重等行为不在这里重复测：下面这条等价断言表明
+  // toTsQueryInput 只是 queryTerms 的 join，那些行为由 queryTerms 的用例覆盖即可。
   it('等价于 queryTerms 的 join（薄封装，不允许各自演化）', () => {
     expect(toTsQueryInput('代号FC-6035 是 测试环境端口')).toBe(
       queryTerms('代号FC-6035 是 测试环境端口').join(' | ')
     )
+
+    // 长查询同样必须一致（上限与去重都在 queryTerms 里）
+    const long = Array.from({ length: 100 }, (_, i) => `k${i}`).join(' ')
+    expect(toTsQueryInput(long)).toBe(queryTerms(long).join(' | '))
+    expect((toTsQueryInput(long) ?? '').split(' | ')).toHaveLength(MAX_QUERY_TERMS)
   })
 
   it('注入 tsquery 语法只会被当作分隔符丢弃', () => {

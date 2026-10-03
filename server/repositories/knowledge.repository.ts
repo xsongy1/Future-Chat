@@ -637,7 +637,8 @@ export const KnowledgeRepository = {
   /**
    * BM25 词法检索（在 SQL 里算分）
    *
-   * 打分公式与 server/services/rag/bm25.ts 完全一致（那边是参考实现，单测用它交叉验证）：
+   * 打分公式与 server/services/rag/lexical.ts 的头注释一致，并由集成测试用数据库里真实的
+   * tf / df / N / avgdl 做数值交叉验证（__tests__/indexing.integration.test.ts）：
    *   score = Σ_t idf(t) * tf * (k1 + 1) / (tf + k1 * (1 - b + b * dl / avgdl))
    *   idf(t) = ln(1 + (N - df + 0.5) / (df + 0.5))
    *

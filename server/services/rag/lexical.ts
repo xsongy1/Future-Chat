@@ -10,14 +10,35 @@
  * 中文没有空格，直接上 Postgres 的默认分词器会把整句当成一个词项，
  * 因此词项由 tokenizer.ts 统一生成（CJK 二元组 + 拉丁词），
  * 索引侧写进 chunk.tsv，查询侧拼成 tsquery——两边必须来自同一个分词器。
+ *
+ * ## 打分公式（生产路径唯一的实现，写在 SQL 里）
+ *   score = Σ_t idf(t) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avgdl))
+ *   idf(t) = ln(1 + (N - df(t) + 0.5) / (df(t) + 0.5))
+ *
+ * 两个刻意的选择：
+ * - idf 用带 +1 的形式：私有知识库规模小，常见 bigram 的 df 很容易等于 N，
+ *   经典写法 ln((N - df + 0.5) / (df + 0.5)) 会得到负数，命中该词的文档反被扣分，
+ *   排序会变得反直觉；加 +1 后最坏也只是趋近 0（词项不贡献），分数始终非负。
+ * - k1 控制 tf 饱和速度、b 控制长度归一化强度，都取 BM25 惯例值 1.2 / 0.75：
+ *   中文 bigram 词项多，而 chunk 长度由 chunker 固定，长度分布集中，不需要额外调参。
+ *
+ * 这条公式在应用层没有第二份实现（曾有 server/services/rag/bm25.ts 作为"参考实现"，
+ * 但它只被自己的单测引用，真正要验证的 SQL 反而没验证）。现在由集成测试里的
+ * oracle 承担交叉验证：用数据库里真实的 tf / df / N / avgdl 算出期望分，
+ * 断言 SQL 的返回值一致（见 __tests__/indexing.integration.test.ts）。
  */
 
 import { queryTerms, toTsQueryInput } from './tokenizer'
-import { BM25_B, BM25_K1 } from './bm25'
 import {
   KnowledgeRepository,
   type ScoredChunk,
 } from '@/server/repositories/knowledge.repository'
+
+/** tf 饱和系数（BM25 惯例值，控制 tf 增长的边际收益衰减速度） */
+export const BM25_K1 = 1.2
+
+/** 长度归一化强度（BM25 惯例值，0 = 不惩罚长文档，1 = 完全按 dl / avgdl 归一化） */
+export const BM25_B = 0.75
 
 export interface LexicalSearchResult {
   /** 是否具备可用的词法索引（无有效词项时为 false） */
