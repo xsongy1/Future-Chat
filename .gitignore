@@ -58,3 +58,10 @@ public/generated/
 # AI 生成图片的落盘目录（docker-compose 把它挂到容器的 /app/public/generated）
 # 生成物不入库：会被 .env 的 IMAGE_STORAGE_DIR 指向，且体积极大
 /generated/
+
+# 受限沙箱专用的测试执行脚手架（本地保留，不入库）
+# 本机沙箱禁止子进程管道，vitest 本体（esbuild 需要 spawn+pipe）跑不起来，
+# 这两个文件用 Node 内置类型擦除直接执行 .test.ts，仅供本地验证。
+# 仓库里的测试用标准 vitest 跑即可（pnpm test），不需要它们。
+/scripts/_ts-loader.mjs
+/scripts/_vitest-run.mjs

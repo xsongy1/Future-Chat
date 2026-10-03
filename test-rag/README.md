@@ -47,9 +47,16 @@ node test-rag/run-tests.mjs "--model=deepseek-ai/DeepSeek-V3.2"
 
 # 重新导入（会先删掉同名知识库）
 node test-rag/run-tests.mjs --force
+
+# 服务不在 3000 端口时（例如本地 dev 起在 3001）
+$env:FC_BASE_URL='http://127.0.0.1:3001'; node test-rag/run-tests.mjs --force
 ```
 
-脚本做的事：`POST /api/knowledge` 建库 → 3 次 `POST /api/knowledge/{id}/documents` 上传 → 查库核对 → 跑用例。
+脚本做的事：`POST /api/knowledge` 建库 → 3 次 `POST /api/knowledge/{id}/documents` 上传 → **轮询等待异步入库完成** → 查库核对 → 跑用例。
+
+> ⚠️ 上传接口是**异步**的：返回 `202 + status=pending`，向量化在后台 worker 里执行。
+> 脚本会自动轮询 `GET /api/knowledge/{id}/documents` 直到全部 `ready`（上限 `FC_WAIT_INGEST_MS`，默认 180 秒）。
+> 手动测试时也一样：**上传返回成功 ≠ 已经可以检索**，要等 `status=ready`。
 
 ### 方式 B：纯 API（用 curl / Postman）
 
@@ -92,10 +99,17 @@ curl -H "Cookie: auth-token=$TOKEN" http://127.0.0.1:3000/api/knowledge/<KB_ID>
 ```text
 KnowledgeBase        1 条   name = Future-Chat 内部技术知识库（RAG 测试）
 KnowledgeDocument    3 条   status = ready，chunkCount = 1（每个文档 1 个 chunk）
-DocumentChunk        3 条   embedding 维度 = 1024，L2 范数 ≈ 1.0
+DocumentChunk        3 条   embedding 维度 = 1024（double precision[]），L2 范数 ≈ 1.0
+                            embeddingVec 非空（vector(1024)，走 HNSW 的镜像列）
+                            tsv 非空（BM25 词项 + tokenCount），embeddingModel = BAAI/bge-m3
+RagTask              3 条   status = succeeded（异步入库的任务记录）
 ```
 
-上传接口本身就会把结果返回给你（`status` 和 `chunkCount` 字段），这两个字段就是"切分 + 向量化 + 落库"是否成功的直接证据。
+上传接口本身就会把结果返回给你（入队时 `status=pending`），真正的"切分 + 向量化 + 落库"结果要看
+`GET /api/knowledge/{id}/documents` 里的 `status` / `chunkCount` / `processedChunks`——
+"上传返回 202"只说明任务已入队，不等于已经可以检索。
+
+想直接看索引状态：`pnpm rag:status`（pgvector、HNSW/GIN 索引、模型分布、队列、embedding 缓存一览）。
 
 ---
 

@@ -8,9 +8,14 @@
 name: sky-chat
 
 services:
-  # PostgreSQL 数据库
+  # PostgreSQL 数据库（带 pgvector 扩展）
+  #
+  # 镜像从 postgres:16-alpine 换成 pgvector/pgvector:pg16：
+  # 官方 postgres 镜像不含 pgvector 扩展，而 RAG 的向量检索要在 SQL 里算余弦距离
+  # 并走 HNSW 索引，必须有 vector 类型。pgvector 官方镜像就是 postgres 官方镜像
+  # 加装扩展，版本号（pg16）与原来一致，数据卷可以继续用，不需要重建数据。
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: future-chat-postgres
     restart: unless-stopped
     environment:

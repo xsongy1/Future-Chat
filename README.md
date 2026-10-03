@@ -47,11 +47,15 @@ AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生�
 
 - 入口：聊天输入框内的「私有知识库」开关 + 旁边的知识库选择器（弹窗内可新建 / 删除知识库、上传 / 删除文档）
 - 支持格式：**仅 `.txt` / `.md`，单文件 ≤ 1MB**（PDF/DOCX 未实现，无对应解析依赖）
-- 入库链路（同步执行，请求返回即已入库）：解析 → 切分（目标 800 字符 / 重叠 100 字符）→ Embedding（`BAAI/bge-m3`，1024 维）→ 落库
-- 检索链路：问题向量化 → 应用层余弦相似度 → 阈值过滤（`RAG_MIN_SCORE`，默认 **0.45**）→ Top-5
-- 向量存储：`DocumentChunk.embedding`（PostgreSQL `double precision[]`）。**当前未使用 pgvector**：`postgres:16-alpine` 镜像不含该扩展（`pg_available_extensions` 无 `vector`），相似度在 Node 应用层计算，候选集上限 2000 个 chunk
+- 入库链路（**异步任务队列**）：接口解析后立刻返回 `202 + status=pending`，后台 worker 执行 切分（目标 800 字符 / 重叠 100 字符）→ Embedding（`BAAI/bge-m3`，1024 维，带缓存）→ 落库 → 建词法索引；前端轮询 `GET /api/knowledge/{id}/documents` 看 `status` / `processedChunks`
+- 检索链路（**混合检索 + 精排**）：向量召回（pgvector KNN，相似度下推 SQL、走 HNSW） + BM25 词法召回（CJK 二元组，走 GIN） → RRF 融合 → cross-encoder 精排（`BAAI/bge-reranker-v2-m3`，失败自动降级为融合顺序）→ 相对阈值（对"当前问题的最好命中"取比例，不再依赖全局绝对阈值）→ Top-5
+- 向量存储：`DocumentChunk.embedding`（`double precision[]`，Prisma 可直接读写）+ `DocumentChunk.embeddingVec`（`vector(1024)`，HNSW 索引，读写走 `$queryRaw`）。**没有 pgvector 时自动回退**到分页精确扫描（keyset 分页全量扫描 + 有界 top-K，不再有 2000 条候选上限）
+- 去重与缓存：同知识库内内容哈希（sha256）相同的文件不会重复入库；chunk 级内容哈希命中 `EmbeddingCache` 时不再调用 embedding API
 - 权限：所有查询以服务端登录态（`getCurrentUserId`）收敛，客户端提交的 `userId` 一律不被信任；指定他人知识库只会得到「不存在或没有访问权限」
-- 无结果时不伪造来源：明确返回"未检索到相关内容"，并要求模型如实告知
+- 无结果时不伪造来源：明确返回"未检索到相关内容"，并要求模型如实告知；同时区分「库里没有文档」与「有文档但没匹配上/旧模型片段未参与检索」
+- 换 embedding 模型：chunk 上记录了 `embeddingModel` / `embeddingDim`，可灰度重建（`pnpm rag:rebuild`），重建期间新旧模型的片段各自与同模型的查询向量比对，检索不中断
+
+> 架构细节、阈值取舍、环境变量与运维命令见 [`server/services/rag/README.md`](server/services/rag/README.md)。
 
 ### 语音
 - 语音输入：录音转文字（SenseVoice）
@@ -109,6 +113,7 @@ pnpm docker:down
 
 > ⚠️ Docker 相关注意点（真实行为，非理想状态）：
 > - 应用容器跑的是**构建镜像时的源码**。`docker compose up -d`（不带 `--build`）不会重新构建，容易出现"改了代码但线上没变"。
+> - postgres 镜像已从 `postgres:16-alpine` 换成 **`pgvector/pgvector:pg16`**（RAG 需要 `vector` 类型 + HNSW 索引）。镜像基于同一 PostgreSQL 16 大版本，数据卷可直接沿用；`docker compose up -d postgres` 重建容器后，用 `psql -c 'CREATE EXTENSION IF NOT EXISTS vector'`（或让 RAG 迁移里的 `DO` 块自动完成）即可。
 > - 镜像里**不会自动执行 `prisma migrate deploy`**：数据卷为空时表不会被创建，需要手工 `docker compose exec app npx prisma migrate deploy`（或先在宿主迁移好再用同一数据卷）。
 > - `docker-compose.yml` 里显式写了 `name: sky-chat`，用于保住既有数据卷（`sky-chat_postgres_data`）。**工作区目录已经改名为 `Future-Chat`，所以这一行现在是唯一把「新路径」和「旧数据卷」绑在一起的锚点——既不能删也不能改。** 删掉后 compose 会按目录名推断成 `future-chat`，转而去找并不存在的 `future-chat_postgres_data`，于是创建一个空卷：用户、会话、消息、RAG 文档会「看起来消失」（数据其实完好地留在旧卷里，只是没被挂载）。
 > - 运行中的容器是从旧目录启动的，bind mount（`generated` 挂载点）与 `com.docker.compose.project.working_dir` 仍指向旧路径。**在 `Future-Chat` 目录下重新执行一次 `docker compose up -d` 即可修正**——因为有 `name: sky-chat`，compose 会复用既有容器与数据卷，不会丢数据。
@@ -147,8 +152,19 @@ pnpm docker:down
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | 可选 | GitHub 登录 |
 | `TAVILY_API_KEY` | 可选 | `web_search` 工具；未配置则该工具不注册 |
 | `NEXT_PUBLIC_APP_URL` | 可选 | 分享链接拼接，默认 `http://localhost:3000` |
-| `RAG_MIN_SCORE` | 可选 | 检索相似度阈值（0~1），默认 0.45 |
+| `RAG_MIN_SCORE` | 可选 | **已废弃**：旧的绝对余弦阈值。设置后会被当作 `RAG_VECTOR_MIN_SCORE` 处理（见 `server/services/rag/README.md`） |
 | `EMBEDDING_MODEL` | 可选 | 覆盖 Embedding 模型，必须在 `shared/constants/models.ts` 白名单内 |
+| `RAG_RERANK` | 可选 | 精排开关，默认开（`0`/`false`/`off` 关闭）；关闭后退化为 RRF 融合顺序 |
+| `RAG_RERANK_MODEL` | 可选 | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（白名单 `RERANK_MODELS`） |
+| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE` | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分绝对下限（默认 0.05） |
+| `RAG_FUSE_TOP` / `RAG_FUSION_TOP_N` / `RAG_FUSION_MIN_RATIO` | 可选 | 进入精排的融合候选数（默认 30）/ 无精排时的名次截断（默认 `max(topK×3,15)`）/ 额外比例阈值（默认 0=不用） |
+| `RAG_VECTOR_MIN_SCORE` | 可选 | 仅"精排不可用"时的余弦兜底下限（默认 0.35），精排生效时不参与判断 |
+| `RAG_HNSW_EF_SEARCH` / `RAG_HNSW_ITERATIVE_SCAN` | 可选 | HNSW 召回旋钮（默认 100 / `relaxed_order`，pgvector ≥ 0.8） |
+| `RAG_VECTOR_BACKEND` | 可选 | `auto`（默认）/ `pgvector` / `app`，可强制走应用层回退路径做对照 |
+| `RAG_EXACT_SCAN_MAX_CHUNKS` | 可选 | 回退路径的扫描上限；**默认不设上限**（全量扫描），设置后会在日志里标记截断 |
+| `RAG_GRAY_LEGACY_QUERY` / `RAG_GRAY_MAX_LEGACY_MODELS` | 可选 | 灰度重建期间是否为新旧模型各查一次（默认开 / 最多 1 个旧模型） |
+| `RAG_WORKER_ENABLED` / `RAG_WORKER_POLL_MS` / `RAG_WORKER_LOCK_TIMEOUT_MS` / `RAG_WORKER_ONCE` | 可选 | 任务 worker 开关 / 轮询间隔（2000ms）/ 锁超时（120s）/ 跑空即退出 |
+| `RAG_BM25_K1` / `RAG_BM25_B` | 可选 | BM25 参数，默认 1.2 / 0.75 |
 | `TRUST_PROXY` | 可选 | 可信代理配置；未设置时**不启用**基于 IP 的登录限流，审计日志也不记录 IP |
 | `IMAGE_STORAGE_DIR` / `IMAGE_URL_PREFIX` | 可选 | 生成图片的落盘目录与 URL 前缀 |
 | `GEO_TEST_MODE` | 可选 | 设为 `block` 可模拟地区拦截 |
@@ -174,12 +190,20 @@ pnpm db:push                 # prisma db push
 pnpm db:seed                 # 填充 admin/admin 测试账号
 pnpm db:studio               # Prisma Studio
 
+pnpm rag:status              # pgvector/索引/队列/缓存/模型分布 一览
+pnpm rag:backfill            # 存量数据补齐 tsv / 模型标记 / embeddingVec（迁移后必须跑一次）
+pnpm rag:indexes             # 补回 HNSW / GIN 索引（migrate dev 可能把 HNSW 索引 diff 掉）
+pnpm rag:rebuild -- --user=admin --max-chunks=200   # 换 embedding 模型后的灰度重建
+pnpm rag:reindex-lexical     # 只重建词法索引（换分词策略后用）
+pnpm rag:worker              # 独立 worker 进程（多实例部署时把队列消费拆出来）
+
 pnpm docker:up / down / logs / restart
 pnpm clean:logs              # 预览待清理的 console.log
 pnpm clean:logs --write      # 实际删除
 ```
 
-> 历史文档中的 `pnpm db:reset` **不存在**；另外 `pnpm test` 目前只包含 `server/**/__tests__`（RAG chunker / retrieval）与 `packages/future-monitor-sdk/tests`，`features/**/__tests__` 尚未纳入。
+> 历史文档中的 `pnpm db:reset` **不存在**；`pnpm test` 覆盖 `server/**/__tests__`（RAG chunker / tokenizer / BM25 / 融合 / 精排 / 检索编排）与 `packages/future-monitor-sdk/tests`，`features/**/__tests__` 尚未纳入。
+> RAG 的数据库集成测试默认跳过，需要真实库时用 `RAG_DB_TEST=1 pnpm test`（会在库里建临时知识库并在结束时删除）。
 
 ## 项目结构
 
@@ -244,10 +268,16 @@ test-rag/                     # RAG 测试知识库 + 验收/回归脚本
 
 ```bash
 node test-rag/run-tests.mjs      # 导入 3 个测试文档并跑 8 个 RAG 用例（23 项断言）
-node test-rag/regression.mjs     # 14 项全面回归（含工具开关、权限隔离、默认模型）
+node test-rag/regression.mjs     # 全面回归（含工具开关、权限隔离、默认模型）
 node test-rag/guard-check.mjs    # 定向验证「关闭知识库后工具被拒绝执行」
 node --experimental-strip-types test-rag/merge-check.mjs   # 知识库来源合并逻辑单测
+
+# 服务不在 3000 端口时（例如本地 dev 起在 3001）：
+FC_BASE_URL=http://127.0.0.1:3001 node test-rag/run-tests.mjs --force
 ```
+
+> 入库已改为异步：脚本上传后会轮询文档状态直到 `ready`（上限 `FC_WAIT_INGEST_MS`，默认 180 秒），
+> 因此"上传返回 202"不再等于"可检索"，请以轮询结果为准。
 
 ## License
 

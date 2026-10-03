@@ -45,6 +45,7 @@
   "exclude": [
     "node_modules",
     "vitest.config.ts",
-    "packages/future-monitor-sdk/tests"
+    "packages/future-monitor-sdk/tests",
+    "docs/**/__probe__"
   ]
 }

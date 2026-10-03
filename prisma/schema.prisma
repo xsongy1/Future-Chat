@@ -22,6 +22,7 @@ model User {
   accounts       Account[]
   sessions       Session[]
   knowledgeBases KnowledgeBase[]
+  ragTasks       RagTask[]
   
   @@index([email])
 }
@@ -106,6 +107,11 @@ model Conversation {
   sharedAt     DateTime?
   isPinned     Boolean   @default(false)
   pinnedAt     DateTime?
+  // 下面两列由迁移 20251112161305_add_pending_link_and_audit 添加，但一度从模型里消失：
+  // 数据库里有列、schema 里没字段 = drift，任何一次 prisma migrate dev 都会生成
+  // DROP COLUMN（viewCount 是有数据的），属于静默的丢数据风险。补回声明以消除 drift。
+  lastViewedAt DateTime?
+  viewCount    Int       @default(0)
 
   @@index([userId, updatedAt(sort: Desc)])
   @@index([shareToken])
@@ -148,9 +154,13 @@ model MonitorEvent {
 }
 
 // ============ RAG 私有知识库 ============
-// 检索结果是 knowledge_search 工具的返回内容，向量以 Float[]（PostgreSQL double precision[]）
-// 存储，相似度在应用层计算（见 server/services/rag/）。当前库无 pgvector 扩展，
-// 故不使用 vector 类型；规模增长后可迁移到 pgvector，chunk 表结构无需改动。
+// 检索结果是 knowledge_search 工具的返回内容。混合检索由两条通道组成：
+//   1. 向量通道：embedding 同时存 Float[]（Prisma 可直接读写的原始向量）与
+//      embeddingVec vector(1024)（pgvector 列，相似度下推成 SQL，走 HNSW 索引）。
+//      两份数据不是冗余设计，而是「有 pgvector 用 SQL、没有就回退应用层精确扫描」的开关：
+//      Prisma 不支持 vector 类型，读写 embeddingVec 只能走 $queryRaw（见 vector-store.ts）。
+//   2. 词法通道：tsv tsvector 存 CJK bigram + 拉丁词项，配合 GIN 索引做 BM25
+//      （词项切分见 tokenizer.ts，两边的词项必须完全一致，否则永远匹配不上）。
 
 model KnowledgeBase {
   id          String              @id @default(cuid())
@@ -159,6 +169,7 @@ model KnowledgeBase {
   userId      String
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   documents   KnowledgeDocument[]
+  tasks       RagTask[]
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
 
@@ -172,13 +183,26 @@ model KnowledgeDocument {
   name            String
   type            String // 'txt' | 'md'（与 /api/upload 支持的扩展名一致）
   size            Int
-  status          String          @default("ready") // ready | failed
+  // pending | processing | ready | failed
+  // 入库改为任务队列后，创建文档与完成向量化是两件事：先落 pending 再入队，
+  // 因此默认值不再是 ready——否则接口一返回就「看起来入库成功」了。
+  status          String          @default("pending")
   error           String?         @db.Text
   chunkCount      Int             @default(0)
+  /** 已向量化完成的 chunk 数（异步任务写回，用于上传后轮询进度） */
+  processedChunks Int             @default(0)
+  /** 解析后正文的 sha256：同一知识库内重复上传同一份文件时直接复用，不再重复向量化 */
+  contentHash     String?
+  /** 本文档 chunk 使用的 embedding 模型与维度（换模型后据此判断哪些 chunk 需要重建） */
+  embeddingModel  String?
+  embeddingDim    Int?
   createdAt       DateTime        @default(now())
   chunks          DocumentChunk[]
+  tasks           RagTask[]
 
+  @@unique([knowledgeBaseId, contentHash])
   @@index([knowledgeBaseId, createdAt])
+  @@index([status])
 }
 
 model DocumentChunk {
@@ -187,8 +211,79 @@ model DocumentChunk {
   document   KnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
   index      Int // 文档内序号，用于展示与去重
   content    String            @db.Text
+  /** chunk 正文的 sha256：embedding 缓存的键，也是跨文档复用的依据 */
+  contentHash String?
   embedding  Float[] // 与 EMBEDDING_MODELS[].dimensions 对应
-  createdAt  DateTime          @default(now())
+  /** 生成 embedding 的模型与维度（记录在 chunk 上，才能做按模型灰度重建） */
+  embeddingModel String?
+  embeddingDim   Int?
+  /** pgvector 镜像列：仅 1024 维模型写入；Prisma 不支持 vector 类型，读写走 $queryRaw */
+  embeddingVec   Unsupported("vector(1024)")?
+  /** BM25 词项列：由 tokenizer.toLexemeText() 经 to_tsvector('simple', ?) 写入 */
+  tsv            Unsupported("tsvector")?
+  /** BM25 的文档长度 dl（token 数，含重复），长度归一化要用 */
+  tokenCount     Int             @default(0)
+  createdAt      DateTime        @default(now())
 
   @@index([documentId, index])
+  @@index([contentHash])
+  @@index([embeddingModel])
+  // GIN 索引必须带 tsvector_ops，Prisma 不认默认 opclass，要显式声明
+  @@index([tsv(ops: raw("tsvector_ops"))], type: Gin)
+}
+
+/// 入库 / 重建任务队列
+///
+/// 上传接口只负责「落一条 pending 文档 + 入队」，实际切分与向量化由 worker 执行。
+/// 用 PostgreSQL 表当队列而不是引入 Redis/BullMQ：任务量级（每次上传一个文档）
+/// 远达不到需要独立中间件的程度，而 FOR UPDATE SKIP LOCKED 已经能保证多实例下
+/// 不会重复消费，也省掉一套需要额外运维的有状态组件。
+model RagTask {
+  id              String             @id @default(cuid())
+  type            String // ingest | rebuild
+  status          String             @default("queued") // queued | running | succeeded | failed
+  userId          String
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  knowledgeBaseId String?
+  knowledgeBase   KnowledgeBase?     @relation(fields: [knowledgeBaseId], references: [id], onDelete: Cascade)
+  documentId      String?
+  document        KnowledgeDocument? @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  /** 任务参数（ingest 会带上解析后的正文，因此上传接口的 1MB 上限也是任务载荷上限） */
+  payload         Json
+  priority        Int                @default(0)
+  attempts        Int                @default(0)
+  maxAttempts     Int                @default(3)
+  progress        Int                @default(0)
+  error           String?            @db.Text
+  workerId        String?
+  lockedAt        DateTime?
+  /** 最早可执行时间：失败退避重试靠它实现，不需要独立的延迟队列 */
+  runAfter        DateTime           @default(now())
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([status, priority, runAfter])
+  @@index([documentId])
+  @@index([knowledgeBaseId, createdAt])
+}
+
+/// embedding 缓存（全局共享，按 内容哈希 + 模型 唯一）
+///
+/// 命中的是「同一段文本的向量」，命中者拿不到别人的原文（向量不含可还原的文本信息），
+/// 因此不需要按用户隔离；跨用户共享的收益是重复内容（模板、规范条文、重复上传）只付一次钱。
+model EmbeddingCache {
+  id          String   @id @default(cuid())
+  contentHash String
+  model       String
+  dim         Int
+  embedding   Float[]
+  /** 命中次数，用于评估缓存收益与清理策略 */
+  hits        Int      @default(0)
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+
+  @@unique([contentHash, model])
+  @@index([lastUsedAt])
 }

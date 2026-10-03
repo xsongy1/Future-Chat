@@ -29,6 +29,8 @@ const KB_NAME = 'Future-Chat 内部技术知识库（RAG 测试）'
 const FORCE = process.argv.includes('--force')
 /** 可选：--model=deepseek-ai/DeepSeek-V3.2 覆盖默认模型（默认走项目白名单的默认模型） */
 const MODEL = (process.argv.find((a) => a.startsWith('--model=')) || '').slice('--model='.length) || undefined
+/** 等待异步入库完成的上限（上传接口现在只入队，向量化在后台 worker 里跑） */
+const WAIT_INGEST_MS = Number(process.env.FC_WAIT_INGEST_MS || 180000)
 
 // ---------------------------------------------------------------- 环境
 function loadEnv() {
@@ -100,6 +102,42 @@ async function signCookie(userId) {
   const secret = new TextEncoder().encode(process.env.JWT_SECRET)
   const token = await new SignJWT({ userId }).setProtectedHeader({ alg: 'HS256' }).setExpirationTime('2h').sign(secret)
   return `auth-token=${token}`
+}
+
+/**
+ * 等待知识库内的文档完成异步入库
+ *
+ * 上传接口现在只返回 202 + status=pending，真正的切分/向量化由后台 worker 执行，
+ * 所以"上传成功"不再等于"可检索"。这里轮询文档列表，直到没有 pending/processing
+ * 的文档为止（或超时）。
+ */
+async function waitForIngest(baseId, cookie, expected, label = '') {
+  const tag = label ? `（${label}）` : ''
+  const deadline = Date.now() + WAIT_INGEST_MS
+  let last = ''
+
+  while (Date.now() < deadline) {
+    const list = await request('GET', `/api/knowledge/${baseId}/documents`, { cookie })
+    const docsNow = list.status === 200 ? JSON.parse(list.body).documents || [] : []
+    const pending = docsNow.filter((x) => x.status === 'pending' || x.status === 'processing')
+
+    if (docsNow.length >= expected && pending.length === 0) {
+      line(`  ✓ 异步入库完成${tag}：${docsNow.map((x) => `${x.name}=${x.status}`).join('、')}`)
+      return docsNow
+    }
+
+    const snapshot = docsNow
+      .map((x) => `${x.name}:${x.status}(${x.processedChunks}/${x.chunkCount})`)
+      .join(' ')
+    if (snapshot !== last) {
+      line(`  … 等待异步入库${tag}：${snapshot || '(暂无文档)'}`)
+      last = snapshot
+    }
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+
+  line(`  ⚠️ 等待异步入库超时${tag}（${WAIT_INGEST_MS}ms），后续断言可能失败`)
+  return []
 }
 
 function parseSSE(raw) {
@@ -191,10 +229,19 @@ async function main() {
         cookie,
       })
       const ms = Date.now() - t0
-      if (up.status !== 200) throw new Error(`上传 ${file} 失败 ${up.status} ${up.body}`)
+      // 入库已改为异步：接口立刻返回 202 + status=pending，向量化由后台 worker 执行
+      if (up.status !== 200 && up.status !== 202) {
+        throw new Error(`上传 ${file} 失败 ${up.status} ${up.body}`)
+      }
       const d = JSON.parse(up.body).document
-      line(`  上传 ${file}（${text.length} 字）→ 200，${ms}ms，status=${d.status}，chunkCount=${d.chunkCount}，documentId=${d.id}`)
+      line(
+        `  上传 ${file}（${text.length} 字）→ ${up.status}，${ms}ms，入队 status=${d.status}，documentId=${d.id}` +
+          `${JSON.parse(up.body).deduplicated ? '（内容哈希命中，未重复入库）' : ''}`
+      )
     }
+
+    // 等待后台任务完成：轮询文档状态直到全部 ready/failed
+    await waitForIngest(kb.id, cookie, docs.length)
   } else {
     line(`已存在同名知识库，复用：${kb.id}（如需重新导入请加 --force）`)
   }
@@ -316,11 +363,16 @@ async function main() {
   })
   const kbB = JSON.parse(kbBCreate.body).knowledgeBase
   const mpB = multipart('file', 'b-secret.md', `# B 部门独占资料\n\nB 部门独占代号为 ${secret}，仅 B 部门成员知悉，禁止跨部门引用。\n`, 'text/markdown')
-  await request('POST', `/api/knowledge/${kbB.id}/documents`, {
+  const upB = await request('POST', `/api/knowledge/${kbB.id}/documents`, {
     body: mpB.payload,
     headers: { 'Content-Type': mpB.contentType },
     cookie: cookieB,
   })
+  if (upB.status !== 200 && upB.status !== 202) {
+    throw new Error(`User B 上传失败 ${upB.status} ${upB.body}`)
+  }
+  // 异步入库：必须等 B 的文档真的 ready 再提问，否则测的是"上传竞态"而不是权限隔离
+  await waitForIngest(kbB.id, cookieB, 1, 'User B')
   line(`已创建 User B (${userB.id}) 与其独占知识库 ${kbB.id}，其中含秘密值 ${secret}`)
 
   const qSecret = '知识库里记录的 B 部门独占代号是什么？'

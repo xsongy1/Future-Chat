@@ -83,6 +83,26 @@ async function signCookie(userId) {
   return `auth-token=${token}`
 }
 
+/**
+ * 等待知识库内的文档完成异步入库
+ *
+ * 上传接口现在只入队（202 + status=pending），向量化在后台 worker 里执行，
+ * 因此"上传成功"不再等于"可检索"：不等的话测出来的是上传竞态，不是检索行为。
+ */
+async function waitForIngest(baseId, cookie) {
+  const deadline = Date.now() + Number(process.env.FC_WAIT_INGEST_MS || 180000)
+  while (Date.now() < deadline) {
+    const list = await request('GET', `/api/knowledge/${baseId}/documents`, { cookie })
+    const docs = list.status === 200 ? JSON.parse(list.body).documents || [] : []
+    if (docs.length > 0 && docs.every((d) => d.status === 'ready' || d.status === 'failed')) {
+      return docs
+    }
+    await new Promise((r) => setTimeout(r, 2000))
+  }
+  line(`  ⚠️ 等待异步入库超时（知识库 ${baseId}）`)
+  return []
+}
+
 function parseSSE(raw) {
   const events = []
   for (const l of raw.split('\n')) {
@@ -226,6 +246,8 @@ async function main() {
       headers: { 'Content-Type': mp.contentType },
       cookie,
     })
+    // 入库是异步的（202 + pending），必须等文档 ready 再做断言
+    await waitForIngest(kb.id, cookie)
     return { kb, up }
   }
 
@@ -237,8 +259,10 @@ async function main() {
     const chunks = await prisma.documentChunk.findMany({ where: { documentId: dbDoc.id } })
     const embOk = chunks.length > 0 && chunks.every((c) => (c.embedding || []).length === 1024)
     record('知识库创建', a.kb.id && b.kb.id ? true : false, `A=${a.kb.id} B=${b.kb.id}`)
-    record('文档上传', h.status === 'ready' && h.chunkCount > 0 && embOk,
-      `status=${h.status} chunkCount=${h.chunkCount} DB chunk=${chunks.length} embedding=1024→${embOk}`)
+    // 上传响应是 202 + pending，因此断言的是"入队成功 + 后台已真的落库并向量化"
+    record('文档上传（异步入队 + 后台完成）',
+      (a.up.status === 200 || a.up.status === 202) && h.status !== 'failed' && dbDoc.status === 'ready' && dbDoc.chunkCount > 0 && embOk,
+      `HTTP=${a.up.status} 入队时 status=${h.status} → 落库 status=${dbDoc.status} chunkCount=${dbDoc.chunkCount} DB chunk=${chunks.length} embedding=1024→${embOk}`)
   }
 
   hr('6b. 知识库选择：选 A 只能读 A，选 B 只能读 B')
@@ -307,6 +331,8 @@ async function main() {
       headers: { 'Content-Type': mpB.contentType },
       cookie: cookieB,
     })
+    // 换用户时 cookie 也要跟着换（异步入库的轮询走的是文档列表接口，需要属主身份）
+    await waitForIngest(kbB2.id, cookieB)
 
     const asA = await ask('知识库里记录的 B 部门独占代号是什么？', { kb: true, cookie })
     const asB = await ask('知识库里记录的 B 部门独占代号是什么？', { kb: true, cookie: cookieB })
