@@ -180,6 +180,26 @@ describe('selectRecentMessages：整轮与序列合法性', () => {
     expect(result.messages.filter((m) => m.role === 'user')).toHaveLength(2)
   })
 
+  it('历史里一条 user 消息都没有时，不能把窗口清空（真实踩到过的 bug）', () => {
+    // 真实场景：某些调用路径只落 assistant 占位符（没带 userMessageId 的请求、
+    // 或中途失败的重试），于是历史可能全是 assistant。
+    // 修复前：对齐逻辑找不到 user 边界 → 一路走到"清空窗口" → 仅有的历史全丢；
+    //         线上指标表现为 retainedMessageCount=0 而 historyMessageCount>0
+    //         （这是在部署好的容器里发真实请求时才发现的）。
+    const assistantOnly: ContextHistoryMessage[] = [
+      { id: 'a-1', role: 'assistant', content: '好' },
+      { id: 'a-2', role: 'assistant', content: null },
+    ]
+
+    const result = select(assistantOnly, 10000)
+
+    expect(result.messages).toEqual(assistantOnly)
+    expect(result.startIndex).toBe(0)
+    expect(result.droppedCount).toBe(0)
+    // 没有边界可对齐，就不该声称"为了对齐调整过"
+    expect(result.adjustedForPair).toBe(false)
+  })
+
   it('token 合计与窗口内容一致', () => {
     const result = select(history, perMessage * 5)
     const recomputed = estimateHistoryTokens(result.messages).total

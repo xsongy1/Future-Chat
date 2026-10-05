@@ -148,7 +148,19 @@ export function selectRecentMessages(
   let adjustedForPair = false
 
   // 2) 对齐到 user 边界：窗口不该从半轮中间开始
-  if (startIndex < messages.length && messages[startIndex].role !== 'user') {
+  //
+  // ⚠️ 前提是"历史里确实存在 user 消息"。整段历史**没有一条 user 消息**时（真实发生过：
+  // 重试/只落 assistant 占位符的调用路径下，历史可能全是 assistant），
+  // 对齐逻辑找不到任何边界，会一路走到"清空窗口"——那等于把仅有的历史全丢掉。
+  // 没有边界可对齐时应当原样保留后缀：模型看到"只有回答、没有问题"虽然不完美，
+  // 但比完全失忆好得多。
+  const hasUserBoundary = findUserBoundaryAtOrAfter(messages, 0) !== -1
+
+  if (
+    hasUserBoundary &&
+    startIndex < messages.length &&
+    messages[startIndex].role !== 'user'
+  ) {
     const extendTo = findUserBoundaryBefore(messages, startIndex - 1)
     const overshoot =
       extendTo >= 0 ? sumRange(breakdown, extendTo, startIndex) : 0
@@ -168,14 +180,9 @@ export function selectRecentMessages(
         // 这里退化为"无条件向前扩到最近的 user"而不是把窗口清空：
         // 空窗口意味着模型完全失忆，比略微超预算更糟——真正的超预算由
         // manager 的发送前校验兜底，不会真的发出去。
-        if (extendTo >= 0) {
-          used += overshoot
-          startIndex = extendTo
-          adjustedForPair = true
-        } else {
-          startIndex = messages.length
-          used = 0
-        }
+        used += overshoot
+        startIndex = extendTo
+        adjustedForPair = true
       } else {
         used -= sumRange(breakdown, startIndex, nextUser)
         startIndex = nextUser

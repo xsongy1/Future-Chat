@@ -113,10 +113,12 @@ function parseArgs(): CliOptions {
   }
   return {
     live: process.argv.includes('--live'),
-    // 默认 600 轮：会话必须长到窗口被撑满、并且之后还滑动了很久，
+    // 默认 1200 轮：会话必须长到窗口被撑满、并且之后还滑动了很久，
     // 才能显出"Before 每轮输入线性增长（整场 O(n²)）vs After 被钉在预算上（O(n)）"的差别。
     // 轮数太少时两边都还没溢出，对比只会看到持平。
-    turns: Number(arg('turns') ?? 600),
+    // 注意这个数要跟着窗口走：窗口从 64K 修正到 128K 后，"撑满"从第 224 轮推迟到第 457 轮，
+    // 原来 600 轮的会话就只能看出一点点了。
+    turns: Number(arg('turns') ?? 1200),
     outDir: arg('out') ?? 'docs',
     // 真实 API 测量很费 token（D 档一次就是 6 万 token），provider 有 TPM 限流，
     // 连跑几次基准就会撞 429。默认 3 次采样；跑不完时用 --live-repeats=1 降量。
@@ -261,6 +263,7 @@ const SCENARIOS: Scenario[] = [
   { id: 'C', label: '长对话（200 条）', historyTurns: 100 },
   { id: 'D', label: '超长对话（500 条）', historyTurns: 250 },
   { id: 'D2', label: '超长对话（1000 条）', historyTurns: 500 },
+  { id: 'D3', label: '超长对话（2000 条）', historyTurns: 1000 },
   {
     id: 'E',
     label: '超长附件（约 900KB）+ 20 条历史',
@@ -922,15 +925,17 @@ async function runLiveMeasurements(repeats: number): Promise<{
     )
   )
 
-  // D 档是唯一"输入 token 差异足够大"的一档，因此 TTFT/TTLB 只在这一档做重复采样
-  const hugeHistory = makeConversation(250) // 500 条消息
+  // D 档用 2000 条消息：这才是窗口修正到 128K 之后真正会出问题的规模
+  //（500 条/64.8K 在 128K 窗口下两边都装得下，测不出差别）。
+  // 预期：Before 发 253,770 token 会被 provider 直接拒绝，After 压到 ~117K 正常受理。
+  const hugeHistory = makeConversation(1000) // 2000 条消息
   const hugeBefore = buildContextMessages(
     hugeHistory.map((m) => ({ role: m.role, content: m.content ?? '' })),
     instruction
   ) as Array<{ role: string; content: string | null }>
   measurements.push(
     await measureLiveRequest(
-      'D/Before 500 条消息（全量历史）',
+      'D/Before 2000 条消息（全量历史，预期被拒绝）',
       apiKey,
       asChatMessages(hugeBefore),
       estimate(hugeBefore),
@@ -941,7 +946,7 @@ async function runLiveMeasurements(repeats: number): Promise<{
   const hugeManaged = await managed(hugeHistory, warmSummary(hugeHistory))
   measurements.push(
     await measureLiveRequest(
-      'D/After 500 条消息（稳定态：摘要 + 窗口）',
+      'D/After 2000 条消息（稳定态：摘要 + 窗口）',
       apiKey,
       asChatMessages(hugeManaged.messages),
       hugeManaged.metrics.estimatedInputTokens,
@@ -949,8 +954,9 @@ async function runLiveMeasurements(repeats: number): Promise<{
     )
   )
 
-  // 冷压缩：直接调 summarizeHistory，才能拿到"几次调用 / 处理了多少条 / 还剩多少条"的细节
-  const coldHistory = makeConversation(300) // 600 条消息
+  // 冷压缩：直接调 summarizeHistory，才能拿到"几次调用 / 处理了多少条 / 还剩多少条"的细节。
+  // 规模与离线基准一致（1600 条），否则在 128K 窗口下根本跨不过阈值。
+  const coldHistory = makeConversation(800) // 1600 条消息
   const coldBreakdown = estimateHistoryTokens(coldHistory)
   const coldStarted = performance.now()
   const coldOutcome = await summarizeHistory({
@@ -1294,6 +1300,19 @@ async function main(): Promise<void> {
   const options = parseArgs()
   const say = (line = '') => console.log(line)
 
+  // 探测一次历史预算：后面判断"这段历史是否已经发生过压缩"、以及算扫描要跑多少轮都要用它。
+  // 必须用真实配置探，否则窗口一改（比如把保守值从 64K 修正到 128K）这里的推断就全错。
+  const probe = await buildManagedContext({
+    systemPrompt: SYSTEM_PROMPT,
+    historyMessages: [],
+    currentUserMessage: '探针',
+    model: MODEL,
+    enableThinking: false,
+    enabledToolNames: [],
+    config: BENCH_CONFIG,
+  })
+  const historyBudgetTokens = probe.metrics.historyBudgetTokens
+
   say('='.repeat(78))
   say('上下文管理 Before / After 基准')
   say('='.repeat(78))
@@ -1315,14 +1334,14 @@ async function main(): Promise<void> {
     const history = makeConversation(scenario.historyTurns)
     const before = measureBefore(scenario, history)
 
-    // 是否"已经发生过一次压缩"要按事实判断，不能一律塞一份摘要进去：
-    // 一段根本没超过预算的历史，在真实使用里不会产生摘要——
-    // 给它硬塞一份，等于让 After 凭空多付几百 token，短对话的对比就失真了
-    //（第一版就是这么错的：短对话显示 After 反而贵 18.94%，全部来自那份假摘要）。
+    // 是否"已经发生过一次压缩"要按**事实**判断，不能一律塞一份摘要、也不能按"体积大"猜：
+    // 只有历史真的超过历史预算，真实使用里才会产生摘要。
+    // （第一版一律塞摘要 → 短对话凭空贵 18.94%；第二版按"体积超过 Before 的 90%"猜 →
+    //   窗口修正到 128K 后，500 条消息明明装得下，却还是被塞了一份不必要的摘要。）
     const rawHistoryTokens = estimateHistoryTokens(
       history.map((m) => ({ role: m.role, content: m.content ?? '' }))
     ).total
-    const compactedBefore = rawHistoryTokens > before.estimatedInputTokens * 0.9
+    const compactedBefore = rawHistoryTokens > historyBudgetTokens
 
     const after = await measureAfter(
       scenario,
@@ -1391,25 +1410,26 @@ async function main(): Promise<void> {
 
   // ---------- 3. 阈值扫描 ----------
   //
-  // 扫描必须让窗口**真的被撑满**，否则四个阈值全都是"一次也不压缩"，扫描等于没做
-  //（把保守窗口从 32K 提到 64K 之后，第一版扫描就是这样静默退化的）。
-  // 先用一次空历史的构建探出历史预算，再据此算出"撑满 + 再滑动一段"需要的轮数。
-  const probe = await buildManagedContext({
-    systemPrompt: SYSTEM_PROMPT,
-    historyMessages: [],
-    currentUserMessage: '探针',
-    model: MODEL,
-    enableThinking: false,
-    enabledToolNames: [],
-    config: BENCH_CONFIG,
-  })
+  // 扫描必须让**每一档**阈值都至少压缩一次，否则高阈值那几行是退化的
+  //（跑完一次都没压缩 → 该行的"盲区峰值"其实是"从来没压缩过"的值，横向比较就没意义）。
+  // 窗口被撑满后缺口以每轮 tokensPerTurn 增长，所以让最高阈值（0.75）也能触发所需的轮数：
+  //   撑满所需轮数 + 0.75 × 历史预算 / 每轮体量 + 余量
   const fillTurns = Math.ceil(
-    probe.metrics.historyBudgetTokens / Math.max(1, sessionAfter.tokensPerTurn)
+    historyBudgetTokens / Math.max(1, sessionAfter.tokensPerTurn)
   )
-  const sweepTurns = Math.max(options.turns, fillTurns + 150)
+  const maxThreshold = 0.75
+  const turnsForSlowestThreshold = Math.ceil(
+    (maxThreshold * historyBudgetTokens) /
+      Math.max(1, sessionAfter.tokensPerTurn)
+  )
+  const sweepTurns = Math.max(
+    options.turns,
+    fillTurns + turnsForSlowestThreshold + 50
+  )
 
   say(
-    `【3】压缩阈值扫描（${sweepTurns} 轮：窗口约在第 ${fillTurns} 轮被撑满，之后还会滑动 ~150 轮）`
+    `【3】压缩阈值扫描（${sweepTurns} 轮：窗口约在第 ${fillTurns} 轮被撑满，` +
+      `再留 ${turnsForSlowestThreshold + 50} 轮以确保阈值 ${maxThreshold} 也能触发压缩）`
   )
   const thresholdSweep: BenchmarkReport['thresholdSweep'] = []
   const sweepResults: SessionResult[] = []
@@ -1497,10 +1517,10 @@ async function main(): Promise<void> {
 
   // ---------- 4. 冷压缩 ----------
   //
-  // 必须用**确实会触发压缩**的历史规模，否则这里会静默地测出 0 —— 第一版就是这样：
-  // 240 条消息在 32K 窗口下缺口还不到阈值，冷压缩根本没发生，"冷 vs 稳定态"整节变成空的。
-  say('【4】冷压缩 vs 稳定态')
-  const coldHistory = makeConversation(300) // 600 条消息：缺口必然远超阈值
+  // 历史规模必须**确实跨过阈值**，否则这里会静默地测出 0 —— 这个坑踩了两次：
+  // 先是 240 条消息在 32K 窗口下不够，后来窗口修正到 128K 后 600 条又不够了。
+  // 现在按历史预算反推：缺口至少要超过阈值 × 预算，再多留一些，才是一次真实的首压。
+  const coldHistory = makeConversation(800) // 1600 条消息，远超 128K 窗口
   coldAccumulator.input = 0
   coldAccumulator.output = 0
   coldAccumulator.calls = 0
@@ -1543,9 +1563,23 @@ async function main(): Promise<void> {
     coldSummaryCalls: coldAccumulator.calls,
     wasCompacted: coldResult.metrics.wasCompacted,
   }
+  // 一次请求最多处理 MAX_SUMMARY_CHUNKS_PER_REQUEST × 单块上限 的缺口，
+  // 处理不完的部分由后续轮次继续追赶（水位线只推进实际处理量）。
+  const consumedPerRound =
+    MAX_SUMMARY_CHUNKS_PER_REQUEST * BENCH_CONFIG.summaryChunkMaxTokens
+  const roundsToCatchUp = Math.max(
+    1,
+    Math.ceil(
+      coldResult.metrics.uncoveredTokens / Math.max(1, consumedPerRound)
+    )
+  )
   say(
-    `  冷压缩：${coldAccumulator.calls} 次摘要调用，输入 ${coldAccumulator.input} token，输出 ${coldAccumulator.output} token` +
+    `  冷压缩：本轮 ${coldAccumulator.calls} 次摘要调用，输入 ${coldAccumulator.input} token，输出 ${coldAccumulator.output} token` +
       `（历史 ${coldHistory.length} 条 → 压缩后上下文 ${coldResult.metrics.estimatedInputTokens} token / 保留 ${coldResult.metrics.retainedMessageCount} 条）`
+  )
+  say(
+    `          单轮最多消化 ${consumedPerRound} token 的缺口，剩余缺口 ${coldResult.metrics.uncoveredTokens} token ` +
+      `→ 约需 ${roundsToCatchUp} 轮才能追平（这正是"水位线只推进实际处理量"的意义：追不上的部分不会被误标成已摘要）`
   )
   say('  稳定态：0 次摘要调用，0 额外 token（后面每一轮都复用这份摘要）')
   say('')
@@ -1554,9 +1588,10 @@ async function main(): Promise<void> {
   //
   // 用足够长的历史让压缩**真的发生**（否则就是在验证一个没跑过的分支），
   // 再检查第 1 轮的关键信息是否被摘要带到了最终上下文里。
+  // 规模要与第 4 节一致地"确实跨过阈值"，否则这里的第一条断言就会直接失败。
   say('【5】语义保留验证')
   const retention: RetentionCheck[] = []
-  const longHistory = makeConversation(300) // 600 条消息
+  const longHistory = makeConversation(800) // 1600 条消息
   const managed = await buildManagedContext({
     systemPrompt: SYSTEM_PROMPT,
     historyMessages: longHistory,

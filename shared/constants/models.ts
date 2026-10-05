@@ -25,30 +25,62 @@ export interface Model {
   default?: boolean
   /** 最大 tokens（遗留字段：当前无代码读取，输入预算不依赖它） */
   maxTokens?: number
-  /** 上下文窗口（prompt + completion 的总 token 上限），见 CONSERVATIVE_CONTEXT_WINDOW */
+  /** 上下文窗口（prompt + completion 的总 token 上限），取值依据见各模型条目上的注释 */
   contextWindow: number
 }
 
 /**
- * 保守的上下文窗口默认值
+ * 兜底窗口：模型没有显式声明 contextWindow 时使用
  *
- * ⚠️ **这不是从 provider 官方文档核实的精确值**，而是一个**实测出来的下界**：
- *
- * 用 `pnpm context:bench -- --live` 对 `deepseek-ai/DeepSeek-V3.2` 发过一次
- * 真实请求（500 条消息的整段历史），provider 返回的 `prompt_tokens = 63318`
- * 并且**正常受理**（TTFT 4.5s / TTLB 16.7s）。也就是说真实窗口 ≥ 64K。
- *
- * 取 65536 而不是更大的值，是因为它离实测下界只有 3.4% 的余量，
- * 而预算是按**保守上界估算**算的（实测估算偏高约 2%~19%），再叠加 10% 安全边际后，
- * 真正发出去的请求会明显小于 64K，不会踩线。
- *
- * 方向性很重要：低估窗口的代价是多花一点摘要成本，高估窗口的代价是线上请求直接失败。
- * 所以这里只声明"已经验证过的下界"，不去猜一个更大的数。
- *
- * 核对过 provider 文档后（真实窗口可能是 128K），用环境变量
- * `CONTEXT_WINDOW_OVERRIDE` 覆盖即可，不需要改这个文件。
+ * 取 32K 这个最保守的常见值。当前白名单里的两个模型都显式声明了自己的窗口，
+ * 所以这个常量只在"以后加了新模型但忘了声明"时兜底——那种情况下宁可多压缩，
+ * 也不能让请求发出去被拒绝。
  */
-export const CONSERVATIVE_CONTEXT_WINDOW = 65536
+export const CONSERVATIVE_CONTEXT_WINDOW = 32768
+
+/**
+ * Qwen2.5-72B-Instruct 的窗口：32K
+ *
+ * 依据不是猜的：SiliconFlow 的模型列表里 **`Qwen/Qwen2.5-72B-Instruct-128K` 是一个独立 id**
+ * （实测 `GET /v1/models?sub_type=chat` 同时返回两者）。带 `-128K` 后缀的版本单独存在，
+ * 恰恰说明本仓库在用的这个 id 是标准 32K 版本。
+ */
+const QWEN_25_72B_CONTEXT_WINDOW = 32768
+
+/**
+ * DeepSeek-V3.2 的窗口：160K
+ *
+ * 依据是 **provider 自己报出来的上限**，不是文档摘抄、也不是推断：
+ *
+ * ```text
+ * SiliconFlow API error: 400 - {"code":20015,
+ *   "message":"number of input tokens (249319) has exceeded max_prompt_tokens (163840) limit."}
+ * ```
+ *
+ * 这条错误是 `pnpm context:bench -- --live` 发一个 2000 条消息的整段历史（249,319 token）
+ * 时真实返回的，也就是说输入侧硬上限 = **163,840**。
+ *
+ * 反向验证过的下界：另外三档超长输入都被正常受理（provider 返回的真实 prompt_tokens）：
+ *
+ * | 构造规模 | 实测 prompt_tokens | 结果 |
+ * | --- | --- | --- |
+ * | 70K 字符 | 70,013 | ✅ 受理 |
+ * | 100K 字符 | 100,013 | ✅ 受理 |
+ * | 130K 字符 | 130,013 | ✅ 受理 |
+ *
+ * ## 为什么这里填 163840 而不是 163840 + 输出预留
+ *
+ * provider 把限制分开表述：`max_prompt_tokens` 管输入，`max_tokens` 管输出。
+ * 本项目的预算模型是「窗口 - 输出预留 - 安全边际 = 可用输入」，所以把
+ * `max_prompt_tokens` 直接当成"窗口"来用，得到的输入硬上限是 163,840 - 1024，
+ * 比 provider 允许的**再保守 1024 token**。刻意选保守的那一边：
+ * 多留 1K 换来的是"绝不需要靠 fallback 兜底"。
+ *
+ * 历史教训（两次）：这里先写过 65536（只凭一条 63,318 token 被受理的证据），
+ * 再写过 131072（凭 130,013 被受理推断），都是**无谓地多压缩**。
+ * 只有 provider 明确给出的数字才配写进这个常量。
+ */
+const DEEPSEEK_V32_CONTEXT_WINDOW = 163840
 
 /**
  * 输出预留的基础值
@@ -90,7 +122,7 @@ export const CHAT_MODELS: Model[] = [
     isReasoningModel: false,
     supportsThinkingToggle: false,
     maxTokens: 8192,
-    contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
+    contextWindow: QWEN_25_72B_CONTEXT_WINDOW,
   },
   {
     id: 'deepseek-ai/DeepSeek-V3.2',
@@ -104,7 +136,7 @@ export const CHAT_MODELS: Model[] = [
     supportsThinkingToggle: true,
     default: true,
     maxTokens: 8192,
-    contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
+    contextWindow: DEEPSEEK_V32_CONTEXT_WINDOW,
   },
 ]
 

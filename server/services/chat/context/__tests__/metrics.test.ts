@@ -16,6 +16,7 @@ import {
   type ContextMetrics,
 } from '../metrics'
 import { TOKEN_ESTIMATOR_KIND } from '../tokens'
+import { isContextLengthError } from '../index'
 import { makeContextConfig } from './fixtures'
 
 function makeMetrics(overrides: Partial<ContextMetrics> = {}): ContextMetrics {
@@ -134,6 +135,46 @@ describe('finalizeMetrics：结构稳定', () => {
       buildDurationMs: 42,
     })
     expect(metrics.buildDurationMs).toBe(42)
+  })
+})
+
+describe('isContextLengthError：用 provider 真实报文验证过', () => {
+  it('识别 SiliconFlow 真实返回的超限报文（code 20015 / max_prompt_tokens）', () => {
+    // ⚠️ 这条字符串是从真实接口原样粘回来的，不要"顺手改通顺"——
+    // 它的价值就在于逐字对应线上会出现的报文
+    const real = new Error(
+      'SiliconFlow API error: 400 - {"code":20015,"message":"number of input tokens (249319) ' +
+        'has exceeded max_prompt_tokens (163840) limit.","data":null}'
+    )
+    expect(isContextLengthError(real)).toBe(true)
+  })
+
+  it('识别 OpenAI 风格的 context_length_exceeded', () => {
+    expect(
+      isContextLengthError(new Error('{"code":"context_length_exceeded"}'))
+    ).toBe(true)
+    expect(
+      isContextLengthError(new Error('maximum context length is 8192 tokens'))
+    ).toBe(true)
+    expect(isContextLengthError(new Error('too many tokens in request'))).toBe(
+      true
+    )
+  })
+
+  it('不把无关错误误判成超窗（误判会白花一次大请求的钱）', () => {
+    expect(
+      isContextLengthError(
+        new Error('SiliconFlow API error: 401 - invalid api key')
+      )
+    ).toBe(false)
+    expect(
+      isContextLengthError(
+        new Error('SiliconFlow API error: 429 - rate limit reached')
+      )
+    ).toBe(false)
+    expect(isContextLengthError(new Error('fetch failed'))).toBe(false)
+    expect(isContextLengthError(null)).toBe(false)
+    expect(isContextLengthError(undefined)).toBe(false)
   })
 })
 

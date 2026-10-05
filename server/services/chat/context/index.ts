@@ -39,7 +39,17 @@ export type { ContextAttachment, ContextHistoryMessage } from './types'
  *
  * 供应商的报错文案并不统一（有的回 `context_length_exceeded`，有的回
  * "maximum context length is N tokens" 之类），所以这里按关键词识别。
+ *
+ * `max_prompt_tokens` 是 **SiliconFlow 真实返回过的字段名**，务必保留：
+ *
+ * ```text
+ * 400 - {"code":20015,"message":"number of input tokens (249319)
+ *        has exceeded max_prompt_tokens (163840) limit."}
+ * ```
+ *
  * 识别失败也不致命：只是少了一次自动降级重试，用户会看到原始错误。
+ * 反过来**误判**更危险（对无关错误做一次多余的 6 万 token 重试），
+ * 所以最后一个兜底条件要求 token 与 exceed 同时出现。
  */
 export function isContextLengthError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
@@ -48,6 +58,7 @@ export function isContextLengthError(error: unknown): boolean {
     lower.includes('context_length_exceeded') ||
     lower.includes('context length') ||
     lower.includes('maximum context') ||
+    lower.includes('max_prompt_tokens') ||
     lower.includes('max_tokens') ||
     lower.includes('too many tokens') ||
     (lower.includes('token') && lower.includes('exceed'))
