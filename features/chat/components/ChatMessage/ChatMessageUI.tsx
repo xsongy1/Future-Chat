@@ -17,7 +17,14 @@ import { Loader2, Edit2, RotateCw, ChevronDown, ChevronRight, Globe, XCircle, Bo
 import { MarkdownIcon } from '@/components/icons/MarkdownIcon'
 import { TextFileIcon } from '@/components/icons/TextFileIcon'
 import { cn } from '@/lib/utils'
-import type { Message, ToolInvocation, ToolResult, SearchSource, KnowledgeSource } from '@/features/chat/types/chat'
+import type {
+  Message,
+  ToolInvocation,
+  ToolResult,
+  SearchSource,
+  KnowledgeSource,
+  KnowledgeRetrievalStatus,
+} from '@/features/chat/types/chat'
 import type { MessagePhase } from '@/features/chat/types/message-state'
 import { mergeKnowledgeInvocations, toKnowledgeInvocation } from '@/features/chat/utils/knowledge-invocations'
 
@@ -103,6 +110,26 @@ function WebSearchStatus({ invocation }: { invocation: ToolInvocation }) {
 }
 
 /**
+ * 没有来源时的状态文案
+ *
+ * "知识库里没有可信证据"和"检索失败"必须分开说：前者是知识库的事实（用户该去补文档），
+ * 后者是服务的问题（用户该稍后重试）。此前两者都表现为"返回 0 条"，界面只能含糊地说
+ * "知识库中未找到相关内容"，等于把一次故障说成"你的资料库里没这份东西"。
+ *
+ * 未知状态（例如服务端将来新增取值）回退到旧文案，不会渲染成空白。
+ */
+const KNOWLEDGE_EMPTY_TEXT: Partial<Record<KnowledgeRetrievalStatus, string>> =
+  {
+    no_match: '知识库中没有足够可信的证据',
+    empty_knowledge_base: '知识库中还没有可检索的文档',
+    no_access: '无法访问该知识库（不存在或没有权限）',
+    invalid_query: '检索请求无效',
+    error: '知识库检索失败（与"知识库中没有"不是一回事）',
+  }
+
+const KNOWLEDGE_EMPTY_FALLBACK = '知识库中未找到相关内容'
+
+/**
  * 知识库检索状态组件（RAG）
  *
  * 来源是文件而不是 URL，所以单独渲染成文件名标签，
@@ -110,7 +137,6 @@ function WebSearchStatus({ invocation }: { invocation: ToolInvocation }) {
  */
 function KnowledgeSearchStatus({ invocation }: { invocation: ToolInvocation }) {
   const sources = invocation.result?.knowledgeSources as KnowledgeSource[] | undefined
-
   // 检索中
   if (invocation.state === 'running' || invocation.state === 'pending') {
     return (
@@ -147,6 +173,11 @@ function KnowledgeSearchStatus({ invocation }: { invocation: ToolInvocation }) {
   // 完成
   const resultCount = invocation.result?.resultCount ?? 0
   const hasSources = !!sources && sources.length > 0
+  const status = invocation.result?.status as
+    KnowledgeRetrievalStatus | undefined
+  // 没有来源时按状态说明"为什么没有"，而不是一律说"未找到相关内容"
+  const emptyText =
+    (status && KNOWLEDGE_EMPTY_TEXT[status]) || KNOWLEDGE_EMPTY_FALLBACK
 
   // 同一文档可能命中多个片段，按文件名去重后展示
   const uniqueDocuments = hasSources
@@ -158,9 +189,7 @@ function KnowledgeSearchStatus({ invocation }: { invocation: ToolInvocation }) {
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <BookOpen className="h-3.5 w-3.5" />
         <span>
-          {hasSources
-            ? `已检索 ${resultCount} 个知识片段`
-            : '知识库中未找到相关内容'}
+          {hasSources ? `已检索 ${resultCount} 个知识片段` : emptyText}
         </span>
       </div>
 

@@ -83,6 +83,9 @@ export class SSEWriter {
     if (result.name === 'knowledge_search') {
       event.resultCount = parsed.resultCount || 0
       event.knowledgeSources = parsed.sources || []
+      // 检索状态透传：前端据此区分"知识库里没有证据"与"检索失败"，
+      // 此前两者在事件里都是 resultCount=0，界面只能说一句含糊的"未找到相关内容"
+      event.status = parsed.status
     }
     if (result.name === 'generate_image') {
       event.imageUrl = parsed.url

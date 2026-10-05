@@ -13,16 +13,22 @@
  *   2. 词法通道：BM25（CJK bigram 词项，走 GIN）
  *   3. RRF 融合：只看名次不看分数，因此不需要给两路分数标定权重
  *   4. cross-encoder 精排：纠正"关键词命中但答非所问"
- *   5. 相对阈值：用当前 query 的最好命中做参照，而不是一个全局常数
+ *   5. 精排后两道闸门：绝对下限（最低相关性）+ 相对阈值（切长尾）→ TopK 上限
  *
- * ## 为什么去掉了绝对相似度阈值
- * 原实现用一个标定出来的常数（余弦 0.45）过滤片段，注释里记录了标定过程：
+ * ## 为什么去掉了（余弦的）绝对相似度阈值，又为什么在精排后加回了绝对下限
+ * 原实现用一个标定出来的余弦常数（0.45）过滤片段，注释里记录了标定过程：
  * 8 条相关查询的 Top-1 落在 0.4465~0.6320，10 条不相关查询落在 0.1970~0.4805，
  * 两个分布重叠，于是阈值怎么选都是错的——0.30 放进 4/10 噪声，
  * 0.50 又会把正确答案（实测 0.4510）误杀。这说明问题不在"阈值调得准不准"，
  * 而在**单路余弦分在小语料上分辨力不足**，一个全局常数无法同时满足两种 query。
- * 现在的做法是：先靠两路召回 + 精排把候选排序做对，再用"相对当前最好命中"的比例
- * 阈值切尾；绝对下限只在精排不可用时作为兜底（见 RAG_VECTOR_MIN_SCORE 的注释）。
+ *
+ * 但"不要余弦绝对阈值"不等于"不要任何绝对阈值"：只有绝对门槛能回答
+ * "这一批候选整体都不相关"——相对阈值按定义永远至少放过 topScore 自己。
+ * 精排分（cross-encoder 逐对打分）比单路余弦分分辨力强得多，所以在**精排之后**
+ * 用绝对下限兜住最低相关性是成立的；前提是它得用标注数据标定，
+ * 且**不能当成概率**解释（不同精排模型的分数尺度不可比，换模型要重标）。
+ * 默认值 0.05 只是"挡掉近似 0 分的噪声"，不是校准过的相关性下限，
+ * 详见 `RAG_RERANK_MIN_SCORE` 的注释与 rag/README §1.4。
  */
 
 import {
@@ -33,8 +39,11 @@ import {
 import { searchByLexical } from './lexical'
 import { exactScanByVector, searchByVector } from './vector-store'
 import {
+  applyMaxScoreGap,
   reciprocalRankFusion,
-  selectByRelativeThreshold,
+  selectByThreshold,
+  type ThresholdBreakdown,
+  type ThresholdRejection,
   type RankedHit,
 } from './fusion'
 import { isRerankEnabled, rerankChunks, resolveRerankModel } from './rerank'
@@ -42,6 +51,7 @@ import {
   KnowledgeRepository,
   type RetrievedChunk,
 } from '@/server/repositories/knowledge.repository'
+import { getDefaultRerankModel } from '@/shared/constants/models'
 
 export { ingestDocument } from './ingest'
 export type { IngestResult, IngestParams } from './ingest'
@@ -107,17 +117,94 @@ export interface RetrievalDebug {
   rerank: { enabled: boolean; applied: boolean; model: string; candidates: number }
   fused: number
   selected: number
-  threshold: { ratio: number; absoluteFloor: number; mode: 'rerank' | 'fusion' }
+  /**
+   * 阈值快照：把"绝对侧 / 相对侧 / 最终门槛 / 谁决定的"全部留下，
+   * 这样"这条 chunk 是被绝对阈值挡的还是被相对阈值挡的"能直接读出来，不用复算
+   */
+  threshold: RetrievalThresholdDebug
+  /**
+   * 过滤与截断的分解，用来证明「先过滤 → 再 slice(0, topK)」：
+   * TopK 只是数量上限，`passedThreshold` 可以小于 topK，也可以是 0（返回 0 条）
+   */
+  selection: { passedThreshold: number; topK: number }
+  /**
+   * 仅 status='no_match' 时存在：把"为什么没有证据"分成两类，
+   * 因为这两类的修法完全不同——
+   * - `no_candidates`：两路召回一条候选都没命中 → 查切分、query 表达、分词/索引；
+   * - `below_threshold`：召回到了候选但全被门槛挡掉 → 查阈值是否过严、语料是否缺
+   */
+  noMatch?: { cause: NoMatchCause; candidates: number }
   /** 降级原因（精排失败、旧模型查询失败、词法通道异常……） */
   degraded: string[]
+}
+
+/** 无证据时"为什么没有"的两类原因（见 RetrievalDebug.noMatch） */
+export type NoMatchCause = 'no_candidates' | 'below_threshold'
+
+/**
+ * 检索状态（机器可读）
+ *
+ * 关键是**"没有可信证据"与"检索失败"必须是两个状态**。它们在上游要做的事完全不同：
+ * - `no_match` → 该如实告诉用户"知识库里没有相关资料"（并且不能拿模型自己的知识补答）；
+ * - `error` → 该告诉用户"检索暂时不可用"，绝不能被说成"知识库里没有"。
+ * 而在只有"返回 0 条"这一个信号的年代，这两件事在 tool result 里长得一模一样
+ * （`success: true` + `resultCount: 0`），上游只能靠猜。
+ */
+export type RetrievalStatus =
+  /** 有片段通过门槛，sources 非空 */
+  | 'matched'
+  /** 检索正常执行完毕，但没有任何片段达到可信门槛（含"召回没命中"与"全部低于门槛"两种原因） */
+  | 'no_match'
+  /** 库里没有可检索的内容：还没建库，或文档还没入库完成 */
+  | 'empty_knowledge_base'
+  /** 指定的知识库不存在或不属于当前用户 */
+  | 'no_access'
+  /** 请求本身不合法（query 为空） */
+  | 'invalid_query'
+  /** 检索失败（embedding 配置/上游不可用/数据库出错）：与"没有证据"无关 */
+  | 'error'
+
+/** 阈值快照（见 RetrievalDebug.threshold） */
+export interface RetrievalThresholdDebug extends ThresholdBreakdown {
+  /**
+   * rerank：精排分上的门槛；fusion：精排不可用时的 RRF 名次兜底路径
+   */
+  mode: 'rerank' | 'fusion'
+  /** 相对阈值比例（配置值 RAG_RERANK_MIN_RATIO / RAG_FUSION_MIN_RATIO） */
+  ratio: number
+  /** finalThreshold 的别名（历史字段名，取值恒等于 finalThreshold） */
+  value: number
+  /** 被挡掉的条数，按"是哪道闸门挡的"分类；三者之和 + 通过数 = 候选数 */
+  rejected: Record<ThresholdRejection, number>
+  /**
+   * 分数断崖截断（RAG_RERANK_MAX_GAP_RATIO）的生效情况；
+   * `maxGapRatio: 0` 表示未启用（默认），`cutAt` 为截断位置（= 保留条数）
+   */
+  scoreGap: {
+    maxGapRatio: number
+    cutAt: number | null
+    dropRatio: number | null
+  }
+  /**
+   * 仅 mode='fusion'：对**余弦分**单独生效的下限（RAG_VECTOR_MIN_SCORE）及其挡掉的条数。
+   * 它作用的分数维度与上面几个字段（RRF 分）不同，所以单独记，不混进 finalThreshold
+   */
+  cosineFloor?: { value: number; rejected: number }
 }
 
 export interface RetrievalOutcome {
   /** 给模型看的文本（作为 tool result 内容） */
   content: string
+  /**
+   * 检索状态（机器可读）
+   *
+   * 模型只能看到 `content`，所以状态词也会写进文案里（例如 `no_match`）；
+   * 这个字段是给工具层、前端展示、埋点与测试用的结构化版本。
+   */
+  status: RetrievalStatus
   /** 给前端展示的来源列表 */
   sources: KnowledgeSource[]
-  /** 命中片段数 */
+  /** 命中片段数；`status !== 'matched'` 时恒为 0 */
   resultCount: number
   /** 检索诊断（可观测性；不参与模型输入） */
   debug: RetrievalDebug
@@ -156,6 +243,57 @@ const MAX_DEGRADED_NOTES = 3
 /** RAG_MIN_SCORE 的废弃警告只打一次，避免每次检索都刷屏 */
 let warnedLegacyMinScore = false
 
+/** "绝对下限没标定过"的提醒也只打一次 */
+let warnedUncalibratedFloor = false
+
+/**
+ * 提醒"当前精排模型 + 默认绝对下限"这组搭配没被标定过
+ *
+ * 只在两个条件同时成立时提示：用了非默认精排模型，且没有显式配置
+ * `RAG_RERANK_MIN_SCORE`。理由：精排分不是概率，也不是跨模型可比的量纲，
+ * 默认的 0.05 只在默认模型（`BAAI/bge-reranker-v2-m3`）上核过量级，
+ * 换个精排模型它可能等价于另一个完全不同的相关性要求。
+ *
+ * 这是"沉默地换了行为"最容易发生的地方，所以说出来；没配错时不打扰。
+ */
+function warnUncalibratedFloor(): void {
+  if (warnedUncalibratedFloor) return
+
+  const model = resolveRerankModel()
+  if (model === getDefaultRerankModel().id) return
+  if (process.env.RAG_RERANK_MIN_SCORE) return
+
+  warnedUncalibratedFloor = true
+  console.warn(
+    `[RAG] 精排模型 ${model} 不是默认模型，且未设置 RAG_RERANK_MIN_SCORE：` +
+      '绝对下限将沿用 0.05（只挡近似 0 分的噪声，不是标定过的相关性下限）。' +
+      '精排分不是概率、不同模型分数尺度不可比，请用真实 query+chunk 标注数据标定后显式配置' +
+      '（见 server/services/rag/README.md §1.4）'
+  )
+}
+
+/**
+ * 阈值快照的初始值
+ *
+ * 用于"还没算过门槛就返回了"的分支（无候选、无权限、检索失败……）：所有数值字段都是 0，
+ * `mode` 记融合兜底路径的名字只作为占位——读的人不该把它当成"这次真的用了融合阈值"，
+ * 真正发生了什么看 `status` / `debug.noMatch` / `degraded`。
+ */
+function emptyThreshold(): RetrievalThresholdDebug {
+  return {
+    mode: 'fusion',
+    ratio: 0,
+    absoluteFloor: 0,
+    relativeThreshold: 0,
+    finalThreshold: 0,
+    value: 0,
+    topScore: 0,
+    decidedBy: 'absolute',
+    rejected: { absolute: 0, relative: 0, both: 0 },
+    scoreGap: { maxGapRatio: 0, cutAt: null, dropRatio: null },
+  }
+}
+
 export async function retrieve(params: {
   userId: string
   query: string
@@ -168,12 +306,7 @@ export async function retrieve(params: {
 
   const trimmedQuery = query?.trim()
   if (!trimmedQuery) {
-    return {
-      content: '检索失败：query 不能为空。',
-      sources: [],
-      resultCount: 0,
-      debug: emptyDebug(),
-    }
+    return failure('invalid_query', '检索失败：query 不能为空。')
   }
 
   // ---- 1. 收敛检索范围：只取当前用户拥有的知识库 ----
@@ -183,11 +316,19 @@ export async function retrieve(params: {
   )
 
   if (ownedBaseIds.length === 0) {
-    // 指定了 id 却不在自己名下：不区分「不存在」与「无权」，避免泄露资源存在性
-    const content = knowledgeBaseId
-      ? '未检索到内容：该知识库不存在，或你没有访问权限。'
-      : '未检索到内容：你还没有创建任何知识库，请先在知识库中上传文档。'
-    return { content, sources: [], resultCount: 0, debug: emptyDebug() }
+    // 指定了 id 却不在自己名下：不区分「不存在」与「无权」，避免泄露资源存在性。
+    // 注意这两种"没得查"与"查了但没有证据"（no_match）不是一回事：
+    // 前者是权限/前置条件问题，说成"知识库里没有相关资料"会误导用户去补文档。
+    if (knowledgeBaseId) {
+      return failure(
+        'no_access',
+        '无法检索（no_access）：该知识库不存在，或你没有访问权限。'
+      )
+    }
+    return failure(
+      'empty_knowledge_base',
+      '无法检索（empty_knowledge_base）：你还没有创建任何知识库，请先在知识库中上传文档。'
+    )
   }
 
   // ---- 2. 解析模型，并看范围内有没有"旧模型"的向量 ----
@@ -197,12 +338,10 @@ export async function retrieve(params: {
   } catch (error) {
     const msg = error instanceof Error ? error.message : '未知错误'
     console.error('[RAG] embedding 模型配置错误:', msg)
-    return {
-      content: `检索失败：embedding 模型配置错误（${msg}）。请告知用户知识库检索暂时不可用。`,
-      sources: [],
-      resultCount: 0,
-      debug: emptyDebug(),
-    }
+    return failure(
+      'error',
+      `检索失败：embedding 模型配置错误（${msg}）。请告知用户知识库检索暂时不可用。`
+    )
   }
   const activeDim = resolveEmbeddingDim(activeModel)
 
@@ -234,12 +373,10 @@ export async function retrieve(params: {
   } catch (error) {
     const msg = error instanceof Error ? error.message : '未知错误'
     console.error('[RAG] query 向量化失败:', msg)
-    return {
-      content: `检索失败：查询向量化出错（${msg}）。请告知用户知识库检索暂时不可用。`,
-      sources: [],
-      resultCount: 0,
-      debug: emptyDebug(),
-    }
+    return failure(
+      'error',
+      `检索失败：查询向量化出错（${msg}）。请告知用户知识库检索暂时不可用。`
+    )
   }
 
   const grayQueryEnabled = envFlag('RAG_GRAY_LEGACY_QUERY', true)
@@ -338,12 +475,10 @@ export async function retrieve(params: {
   } catch (error) {
     const msg = error instanceof Error ? error.message : '未知错误'
     console.error('[RAG] 向量通道失败:', msg)
-    return {
-      content: `检索失败：读取知识库出错（${msg}）。请告知用户知识库检索暂时不可用。`,
-      sources: [],
-      resultCount: 0,
-      debug: emptyDebug(),
-    }
+    return failure(
+      'error',
+      `检索失败：读取知识库出错（${msg}）。请告知用户知识库检索暂时不可用。`
+    )
   }
 
   let lexicalEnabled = false
@@ -392,7 +527,8 @@ export async function retrieve(params: {
     },
     fused: fused.length,
     selected: 0,
-    threshold: { ratio: 0, absoluteFloor: 0, mode: 'fusion' },
+    threshold: emptyThreshold(),
+    selection: { passedThreshold: 0, topK },
     degraded,
   }
 
@@ -409,15 +545,27 @@ export async function retrieve(params: {
 
     if (totalChunks === 0) {
       return {
-        content: '未检索到内容：知识库中还没有可检索的文档片段。',
+        status: 'empty_knowledge_base',
+        content:
+          '知识库中没有可检索的内容（status=empty_knowledge_base）：知识库中还没有可检索的文档片段。' +
+          '请提示用户先上传文档（或等待入库完成），不要凭常识编造。',
         sources: [],
         resultCount: 0,
         debug: baseDebug,
       }
     }
 
+    // 召回层一条都没命中：这是 no_match 的第一种原因（no_candidates）
+    baseDebug.noMatch = { cause: 'no_candidates', candidates: 0 }
     return {
-      content: noHitMessage(trimmedQuery, degraded, scanDimMismatch ?? 0),
+      status: 'no_match',
+      content: noMatchMessage({
+        query: trimmedQuery,
+        cause: 'no_candidates',
+        candidates: 0,
+        degraded,
+        dimMismatchCount: scanDimMismatch ?? 0,
+      }),
       sources: [],
       resultCount: 0,
       debug: baseDebug,
@@ -439,19 +587,46 @@ export async function retrieve(params: {
 
   baseDebug.rerank.candidates = rerankCandidates.length
 
-  // ---- 7. 选尾：相对阈值 ----
+  // ---- 7. 选尾：绝对下限 + 相对阈值 → TopK ----
+  // 顺序是硬约束：先过滤（质量），再 slice(0, topK)（数量上限）。
+  // 反过来先截断就成了"用数量掩盖质量"——TopK 是上限，不是要凑够的指标。
   let selected: Array<{ id: string; score: number }> = []
-  let threshold: RetrievalDebug['threshold']
+  let threshold: RetrievalThresholdDebug
+  /** 进入最终 TopK 截断之前的条数：它可以小于 topK，甚至为 0 */
+  let passedThreshold = 0
 
   if (reranked && reranked.length > 0) {
     const ratio = envFloat('RAG_RERANK_MIN_RATIO', 0.25, 0, 1)
     const absoluteFloor = envFloat('RAG_RERANK_MIN_SCORE', 0.05, 0, 1)
-    threshold = { ratio, absoluteFloor, mode: 'rerank' }
-    baseDebug.rerank.applied = true
+    const maxGapRatio = envFloat('RAG_RERANK_MAX_GAP_RATIO', 0, 0, 1)
 
-    selected = selectByRelativeThreshold(reranked, { ratio, absoluteFloor }).map(
-      (hit) => ({ id: hit.id, score: hit.score })
-    )
+    baseDebug.rerank.applied = true
+    warnUncalibratedFloor()
+
+    // 两道闸门合成一个门槛：max(绝对下限, 相对阈值)
+    // - 绝对下限：这条候选本身够不够相关（整批都很弱时由它清空结果）
+    // - 相对阈值：这条相对本次最佳结果是不是差太多（切长尾）
+    const gate = selectByThreshold(reranked, { ratio, absoluteFloor })
+
+    // 断崖截断（默认关闭）：只能在已通过门槛的候选里再切尾巴，
+    // 所以它放在过滤之后、TopK 之前，永远不可能把被门槛挡掉的候选放回来
+    const gapped = applyMaxScoreGap(gate.kept, maxGapRatio)
+
+    threshold = {
+      ...gate.threshold,
+      value: gate.threshold.finalThreshold,
+      mode: 'rerank',
+      ratio,
+      rejected: gate.counts,
+      scoreGap: {
+        maxGapRatio,
+        cutAt: gapped.cutAt,
+        dropRatio: gapped.dropRatio,
+      },
+    }
+
+    passedThreshold = gapped.kept.length
+    selected = gapped.kept.map((hit) => ({ id: hit.id, score: hit.score }))
   } else {
     // 兜底路径（精排不可用）：RRF 只看名次，所以用"名次截断 + 余弦下限"两道闸，
     // 而不是 RRF 分的比例阈值——RRF 分 = Σ1/(k+rank)，数值被压缩在 1/61 附近，
@@ -477,23 +652,42 @@ export async function retrieve(params: {
       )
     }
 
-    threshold = { ratio: fusionRatio, absoluteFloor: vectorMinScore, mode: 'fusion' }
+    const rrfRanked = fusedTop.map((hit) => ({
+      id: hit.id,
+      score: hit.rrfScore,
+      hit,
+    }))
+    const gate = selectByThreshold(rrfRanked, {
+      ratio: fusionRatio,
+      absoluteFloor: 0,
+    })
 
     // 兜底路径上才用余弦绝对下限：精排不可用时，一条"排第一但显然不相关"的片段
     // 也会留在候选里；用余弦分把它挡掉。有精排时不能这么做——
-    // 那正是"绝对阈值误杀正确答案"的老问题。
-    selected = selectByRelativeThreshold(
-      fusedTop.map((hit) => ({ id: hit.id, score: hit.rrfScore, hit })),
-      { ratio: fusionRatio, absoluteFloor: 0 }
-    )
-      .filter((item) => {
-        const vectorScore = item.hit.scores.vector
-        // 只被词法通道命中的条目没有余弦分，不该用向量下限否掉它
-        if (vectorScore === undefined) return true
-        return vectorScore >= vectorMinScore
-      })
-      .slice(0, fusionTopN)
-      .map((item) => ({ id: item.id, score: item.hit.rrfScore }))
+    // 那正是"用单路余弦分做绝对阈值会误杀正确答案"的老问题。
+    let cosineRejected = 0
+    const passedCosine = gate.kept.filter((item) => {
+      const vectorScore = item.hit.scores.vector
+      // 只被词法通道命中的条目没有余弦分，不该用向量下限否掉它
+      if (vectorScore === undefined) return true
+      if (vectorScore >= vectorMinScore) return true
+      cosineRejected += 1
+      return false
+    })
+
+    threshold = {
+      ...gate.threshold,
+      value: gate.threshold.finalThreshold,
+      mode: 'fusion',
+      ratio: fusionRatio,
+      rejected: gate.counts,
+      scoreGap: { maxGapRatio: 0, cutAt: null, dropRatio: null },
+      cosineFloor: { value: vectorMinScore, rejected: cosineRejected },
+    }
+
+    const capped = passedCosine.slice(0, fusionTopN)
+    passedThreshold = capped.length
+    selected = capped.map((item) => ({ id: item.id, score: item.hit.rrfScore }))
 
     if (isRerankEnabled()) {
       degraded.push('精排未生效，本次按融合顺序返回')
@@ -504,10 +698,25 @@ export async function retrieve(params: {
   baseDebug.selected = hits.length
   // 阈值信息必须回填：否则诊断里恒为初始值，"为什么这条被切掉"就无从查起
   baseDebug.threshold = threshold
+  baseDebug.selection = { passedThreshold, topK }
 
   if (hits.length === 0) {
+    // 有候选、但一条都没过门槛：这是 no_match 的第二种原因（below_threshold）。
+    // 这里必须返回"没有可信证据"，而不是空数组——空数组会让上游无法区分
+    // "知识库里没有"和"检索坏了"（见 RetrievalStatus 的注释）。
+    // 进入门槛的候选数：精排生效时是精排真正打过分的那批（上游可能少返回几条），
+    // 否则是融合后截断的那批
+    const candidates = reranked ? reranked.length : fusedTop.length
+    baseDebug.noMatch = { cause: 'below_threshold', candidates }
     return {
-      content: noHitMessage(trimmedQuery, degraded, scanDimMismatch ?? 0),
+      status: 'no_match',
+      content: noMatchMessage({
+        query: trimmedQuery,
+        cause: 'below_threshold',
+        candidates,
+        degraded,
+        dimMismatchCount: scanDimMismatch ?? 0,
+      }),
       sources: [],
       resultCount: 0,
       debug: baseDebug,
@@ -555,10 +764,15 @@ export async function retrieve(params: {
     `[RAG] 检索完成: 「${trimmedQuery}」 → 向量 ${vectorHits}（${vectorBackend}）` +
       ` + 词法 ${lexicalHits} → 融合 ${fused.length} → 精排${
         baseDebug.rerank.applied ? '生效' : '降级'
-      } → 返回 ${hits.length}`
+      } → 门槛 ${baseDebug.threshold.finalThreshold.toFixed(4)}` +
+      `（绝对 ${baseDebug.threshold.absoluteFloor} / 相对 ${baseDebug.threshold.relativeThreshold.toFixed(
+        4
+      )}，${baseDebug.threshold.decidedBy} 决定）` +
+      ` → 通过 ${passedThreshold} → 返回 ${hits.length}`
   )
 
   return {
+    status: 'matched',
     content: parts.join('\n'),
     sources,
     resultCount: hits.length,
@@ -567,18 +781,41 @@ export async function retrieve(params: {
 }
 
 /**
- * 无结果时的提示语
+ * 失败/未进入检索环节时的统一出口
  *
- * 关键是明确要求模型"不要凭常识编造"，并带上降级/维度信息：
- * 用户看到"查不到"时，最需要知道的是"库里确实没有"还是"有但没参与检索"。
+ * 所有提前返回都走这里，保证 `status` 一定被填上——漏填一个分支，
+ * 上游就会把一次失败当成"知识库里没有证据"（两者要给用户的说法完全不同）。
  */
-function noHitMessage(
-  query: string,
-  degraded: string[],
-  dimMismatchCount: number
-): string {
-  const notes: string[] = []
+function failure(status: RetrievalStatus, content: string): RetrievalOutcome {
+  return { status, content, sources: [], resultCount: 0, debug: emptyDebug() }
+}
 
+/**
+ * 没有可信证据时的提示语（status = no_match）
+ *
+ * 这条文案是**唯一**告诉模型"知识库里没有"的地方，所以要做到三件事：
+ * 1. 与"检索失败"在措辞上分开：失败说"检索暂时不可用"，这里说"没有足够可信的证据"；
+ * 2. 带上机器可读的状态词 `no_match`（提示词、前端、埋点都按它判断，而不是靠猜文案）；
+ * 3. 明确禁止用模型自己的知识补答——"没找到"最危险的后果就是模型开始编。
+ *
+ * 同时带上降级/维度信息：用户看到"查不到"时，最需要区分的是
+ * "库里确实没有"还是"有但这次没参与检索"。
+ */
+function noMatchMessage(params: {
+  query: string
+  cause: NoMatchCause
+  candidates: number
+  degraded: string[]
+  dimMismatchCount: number
+}): string {
+  const { query, cause, candidates, degraded, dimMismatchCount } = params
+
+  const detail =
+    cause === 'no_candidates'
+      ? '本次检索没有任何候选片段（向量与词法两路都没有命中）'
+      : `本次检索到的 ${candidates} 个候选片段都没有达到相关性门槛`
+
+  const notes: string[] = []
   if (dimMismatchCount > 0) {
     notes.push(
       `另有 ${dimMismatchCount} 个片段因向量维度与当前模型不一致被跳过，需要重新入库`
@@ -589,8 +826,8 @@ function noHitMessage(
   const extra = notes.length > 0 ? `（${notes.join('；')}）` : ''
 
   return (
-    `未检索到与「${query}」相关的内容${extra}。` +
-    `请如实告知用户知识库中没有相关资料，不要凭常识编造答案。`
+    `知识库检索结果：no_match（未找到足够可信的证据）——关于「${query}」，${detail}${extra}。` +
+    `请如实告知用户知识库中没有相关资料，不要凭常识编造，也不要用你自己的知识替代知识库内容作答。`
   )
 }
 
@@ -603,7 +840,8 @@ function emptyDebug(): RetrievalDebug {
     rerank: { enabled: isRerankEnabled(), applied: false, model: '', candidates: 0 },
     fused: 0,
     selected: 0,
-    threshold: { ratio: 0, absoluteFloor: 0, mode: 'fusion' },
+    threshold: emptyThreshold(),
+    selection: { passedThreshold: 0, topK: 0 },
     degraded: [],
   }
 }

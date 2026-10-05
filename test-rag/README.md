@@ -153,7 +153,7 @@ RagTask              3 条   status = succeeded（异步入库的任务记录）
 实测：两个开关都关闭时，模型点名 `web_search` / `knowledge_search`，后端照样执行并返回了真实结果。
 → 用例 6 在"模型正常作答"的路径上能通过；如果你在问题里直接点名工具名，就可能复现出被绕过的情况。
 
-### 3. 阈值不再是"一个全局常数"（这段历史值得看）
+### 3. 阈值是"绝对下限 + 相对比例"，但绝对下限还没标定（这段历史值得看）
 
 早期实现用一个标定出来的绝对相似度阈值（余弦 0.45 / 0.5）。本知识库的实测很能说明问题：
 
@@ -163,16 +163,30 @@ RagTask              3 条   status = succeeded（异步入库的任务记录）
 相关查询的 Top-1 落在 0.4465~0.6320，不相关查询落在 0.1970~0.4805，**两个分布重叠**——也就是说阈值怎么选都错：
 调低放进噪声，调高误杀正解。问题不在"阈值调得准不准"，而在单路余弦分在小语料上分辨力不足。
 
-现在改成：向量（pgvector）**+** BM25 词法两路召回 → RRF 融合 → cross-encoder 精排 → 按"当前问题的最好命中"
-取相对比例切尾。效果（同一知识库、同一问题实测）：
+现在改成：向量（pgvector）**+** BM25 词法两路召回 → RRF 融合 → cross-encoder 精排 → 精排之后做两道闸门：
+
+```
+threshold = max(RAG_RERANK_MIN_SCORE, RAG_RERANK_MIN_RATIO × topScore)
+            └ 绝对下限：最低相关性        └ 相对阈值：切"相对最佳结果过差"的长尾
+先过滤 → 再 slice(0, Top5)     ← TopK 只是数量上限，不凑数，可以返回 0 条
+```
+
+效果（同一知识库、同一问题实测）：
 
 | 用例 3「这个知识库的负责人是谁？」 | 结果 |
 | --- | --- |
 | 旧实现（绝对阈值 0.5） | 检索 **0 条** → 答不出 |
 | 现在 | 检索 **1 条**（`project-overview.md`，精排分 0.59+）→ 正确答出 岑知远 |
 
+⚠️ **别把默认值当成标定结果**：`RAG_RERANK_MIN_SCORE` 默认 `0.05` 只挡近似 0 分的噪声，
+它**没有**用本知识库的数据标定过（唯一实测点就是上面那条正样本 0.59+，一个样本定不了阈值）。
+默认值下 `0.80 / 0.30 / 0.29` 这样的长尾会全部传给模型；要让它承担"整批候选都不相关就返回 0 条"，
+必须自己用真实 query + 人工判定跑一轮标定（流程见 `server/services/rag/README.md` §1.4）。
+也别把精排分当概率——不同精排模型的分数尺度不可比，换模型就要重标。
+
 `RAG_MIN_SCORE` 已废弃（仅作为 `RAG_VECTOR_MIN_SCORE` 的别名，且只在精排不可用时生效）；
-要调检索行为请看 `server/services/rag/README.md` 里的环境变量表。
+要调检索行为请看 `server/services/rag/README.md` 里的环境变量表。排查"这条为什么被切掉"时，
+看 `sources[].rerankScore` 与 `debug.threshold`（`absoluteFloor` / `relativeThreshold` / `finalThreshold` / `decidedBy` / `rejected`）。
 
 ### 4. 其它
 
@@ -187,10 +201,24 @@ RagTask              3 条   status = succeeded（异步入库的任务记录）
 
 | 位置 | 看什么 |
 | --- | --- |
-| 浏览器 Network | `POST /api/chat`（响应类型 `text/event-stream`），在 EventStream/响应体里找 `"type":"tool_call"`、`"name":"knowledge_search"`、`"type":"tool_result"`、`"knowledgeSources"`、`"type":"answer"` |
-| 浏览器界面 | 回答上方出现"正在查询知识库..."（带旋转图标）→ 完成后变成"已检索 N 个知识片段" + `来源:` 后面的文件名标签（如 `project-overview.md`） |
+| 浏览器 Network | `POST /api/chat`（响应类型 `text/event-stream`），在 EventStream/响应体里找 `"type":"tool_call"`、`"name":"knowledge_search"`、`"type":"tool_result"`、`"knowledgeSources"`、`"status"`、`"type":"answer"` |
+| 浏览器界面 | 回答上方出现"正在查询知识库..."（带旋转图标）→ 完成后变成"已检索 N 个知识片段" + `来源:` 后面的文件名标签（如 `project-overview.md`）；没有来源时按状态显示"知识库中没有足够可信的证据"/"知识库中还没有可检索的文档"/"无法访问该知识库"/"知识库检索失败（与"知识库中没有"不是一回事）" |
 | 服务端日志 | `[ToolRegistry] Registered tool: knowledge_search`、`[ChatService] Enabled tools: [...]`、`[Stream] 启动工具: knowledge_search`、`[RAG] 文档入库完成: xxx.md → N 个片段 (BAAI/bge-m3)` |
 | 数据库 | `KnowledgeBase` / `KnowledgeDocument` / `DocumentChunk`：`embedding`（1024 维 `double precision[]`）+ `embeddingVec`（`vector(1024)`，走 HNSW 的镜像列）+ `tsv`（BM25 词项，GIN）。一句话概览用 `pnpm rag:status` |
+
+### 怎么区分"这次没检索到"是哪一种
+
+`tool_result` 事件里的 `status` 就是结论（也会随消息一起落库，历史消息同样能看）：
+
+| status | 意思 | 该做什么 |
+| --- | --- | --- |
+| `matched` | 有片段通过门槛 | 看 `knowledgeSources` 的来源与分数 |
+| `no_match` | 检索正常，但没有片段达到可信门槛 | 看服务端 `debug.noMatch.cause`：`no_candidates` = 两路召回都没命中（查切分/问法），`below_threshold` = 全被阈值挡掉（查阈值/语料） |
+| `empty_knowledge_base` | 库里没有可检索片段 | 文档还没入库完，或还没上传 |
+| `no_access` | 知识库不存在 / 无权限 | 检查是不是选错了知识库或换了账号 |
+| `error` | 检索失败（embedding/上游/数据库） | **不是**"知识库里没有"，看服务端日志的 `[RAG] …失败` |
+
+以前这几种情况在界面与事件里都只是 `resultCount=0`，只能靠翻日志猜；现在结构化状态直接可读。
 
 ---
 

@@ -16,7 +16,11 @@
  * @module features/chat/utils/knowledge-invocations
  */
 
-import type { ToolInvocation, KnowledgeSource } from '@/features/chat/types/chat'
+import type {
+  ToolInvocation,
+  KnowledgeSource,
+  KnowledgeRetrievalStatus,
+} from '@/features/chat/types/chat'
 
 /**
  * 合并同一条消息里的多次 knowledge_search 调用
@@ -51,6 +55,17 @@ export function mergeKnowledgeInvocations(
   }
 
   const summedCount = succeeded.reduce((n, i) => n + (i.result?.resultCount || 0), 0)
+  const resultCount = mergedSources.length > 0 ? mergedSources.length : summedCount
+
+  // 状态要反映"最终结论"，而不是某一次调用的过程：
+  // 只要有来源就是 matched；一条来源都没有时用最后一次调用的状态
+  // （模型常在 no_match 后换个问法重试，最后一次才代表结论）。
+  // 老历史消息没有 status 字段 → 保持 undefined，让界面回退到中性的"未找到相关内容"：
+  // 那种数据里已经无从判断当时是"没有证据"还是"检索失败"，不该替它下结论。
+  const status: KnowledgeRetrievalStatus | undefined =
+    resultCount > 0
+      ? 'matched'
+      : (last.result?.status as KnowledgeRetrievalStatus | undefined)
 
   return {
     ...last,
@@ -58,8 +73,9 @@ export function mergeKnowledgeInvocations(
     result: {
       success: succeeded.length > 0,
       cancelled: invocations.some((i) => i.state === 'cancelled'),
-      resultCount: mergedSources.length > 0 ? mergedSources.length : summedCount,
+      resultCount,
       knowledgeSources: mergedSources,
+      status,
     },
   }
 }

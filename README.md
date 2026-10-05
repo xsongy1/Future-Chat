@@ -48,11 +48,15 @@ AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生�
 - 入口：聊天输入框内的「私有知识库」开关 + 旁边的知识库选择器（弹窗内可新建 / 删除知识库、上传 / 删除文档）
 - 支持格式：**仅 `.txt` / `.md`，单文件 ≤ 1MB**（PDF/DOCX 未实现，无对应解析依赖）
 - 入库链路（**异步任务队列**）：接口解析后立刻返回 `202 + status=pending`，后台 worker 执行 切分（目标 800 字符 / 重叠 100 字符）→ Embedding（`BAAI/bge-m3`，1024 维，带缓存）→ 落库 → 建词法索引；前端轮询 `GET /api/knowledge/{id}/documents` 看 `status` / `processedChunks`
-- 检索链路（**混合检索 + 精排**）：向量召回（pgvector KNN，相似度下推 SQL、走 HNSW） + BM25 词法召回（CJK 二元组，走 GIN） → RRF 融合 → cross-encoder 精排（`BAAI/bge-reranker-v2-m3`，失败自动降级为融合顺序）→ 相对阈值（对"当前问题的最好命中"取比例，不再依赖全局绝对阈值）→ Top-5
+- 检索链路（**混合检索 + 精排**）：向量召回（pgvector KNN，相似度下推 SQL、走 HNSW） + BM25 词法召回（CJK 二元组，走 GIN） → RRF 融合 → cross-encoder 精排（`BAAI/bge-reranker-v2-m3`，失败自动降级为融合顺序）→ **绝对下限 + 相对阈值**（`threshold = max(RAG_RERANK_MIN_SCORE, ratio × topScore)`）→ Top-5（数量上限；先过滤再截断，不够 5 条就少返回，甚至返回 0 条）
+  - **绝对下限不是概率，也未经数据标定**：`RAG_RERANK_MIN_SCORE` 默认 `0.05` 只挡近似 0 分的噪声。要让它承担"最低相关性 / 整批不相关就返回 0 条"，必须用真实 query + chunk 标注数据标定后显式配置（方法与诚实说明见 [`server/services/rag/README.md` §1.4](server/services/rag/README.md)）
+  - 可观测：`sources[]` 带 `vectorScore` / `lexicalScore` / `rerankScore`，`debug.threshold` 带 `absoluteFloor` / `relativeThreshold` / `finalThreshold` / `decidedBy` / `rejected`（哪道闸门挡掉了几条）
+  - **检索状态**：`retrieve()` 返回 `status`（`matched` / `no_match` / `empty_knowledge_base` / `no_access` / `invalid_query` / `error`），tool result、前端与埋点都能拿到。`no_match`（检索正常但没有可信证据）与 `error`（检索失败）是两件事：前者如实说"知识库中没有相关资料"，后者说"检索暂时不可用"，两者都不允许模型用自己的知识补答
 - 向量存储：`DocumentChunk.embedding`（`double precision[]`，Prisma 可直接读写）+ `DocumentChunk.embeddingVec`（`vector(1024)`，HNSW 索引，读写走 `$queryRaw`）。**没有 pgvector 时自动回退**到分页精确扫描（keyset 分页全量扫描 + 有界 top-K，不再有 2000 条候选上限）
 - 去重与缓存：同知识库内内容哈希（sha256）相同的文件不会重复入库；chunk 级内容哈希命中 `EmbeddingCache` 时不再调用 embedding API
 - 权限：所有查询以服务端登录态（`getCurrentUserId`）收敛，客户端提交的 `userId` 一律不被信任；指定他人知识库只会得到「不存在或没有访问权限」
 - 无结果时不伪造来源：明确返回"未检索到相关内容"，并要求模型如实告知；同时区分「库里没有文档」与「有文档但没匹配上/旧模型片段未参与检索」
+  - 具体到状态：`empty_knowledge_base`（库里没东西）/ `no_match`（有东西但没有可信证据）/ `no_access`（无权限）/ `error`（检索失败）分别对应不同的用户话术，前端也据此展示，不再把一次故障说成"知识库里没有"
 - 换 embedding 模型：chunk 上记录了 `embeddingModel` / `embeddingDim`，可灰度重建（`pnpm rag:rebuild`），重建期间新旧模型的片段各自与同模型的查询向量比对，检索不中断
 
 > 架构细节、阈值取舍、环境变量与运维命令见 [`server/services/rag/README.md`](server/services/rag/README.md)。
@@ -159,7 +163,8 @@ pnpm docker:down
 | `EMBEDDING_MODEL` | 可选 | 覆盖 Embedding 模型，必须在 `shared/constants/models.ts` 白名单内 |
 | `RAG_RERANK` | 可选 | 精排开关，默认开（`0`/`false`/`off` 关闭）；关闭后退化为 RRF 融合顺序 |
 | `RAG_RERANK_MODEL` | 可选 | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（白名单 `RERANK_MODELS`） |
-| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE` | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分绝对下限（默认 0.05） |
+| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE` | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分**绝对下限**（默认 0.05，**未标定**，只挡近似 0 分的噪声；承担"最低相关性"前必须用标注数据标定，见 RAG README §1.4） |
+| `RAG_RERANK_MAX_GAP_RATIO` | 可选 | 可选的分数断崖截断（默认 0=关闭）：相邻落差严格大于该比例时截断；**启发式、非标定值** |
 | `RAG_FUSE_TOP` / `RAG_FUSION_TOP_N` / `RAG_FUSION_MIN_RATIO` | 可选 | 进入精排的融合候选数（默认 30）/ 无精排时的名次截断（默认 `max(topK×3,15)`）/ 额外比例阈值（默认 0=不用） |
 | `RAG_VECTOR_MIN_SCORE` | 可选 | 仅"精排不可用"时的余弦兜底下限（默认 0.35），精排生效时不参与判断 |
 | `RAG_HNSW_EF_SEARCH` / `RAG_HNSW_ITERATIVE_SCAN` | 可选 | HNSW 召回旋钮（默认 100 / `relaxed_order`，pgvector ≥ 0.8） |

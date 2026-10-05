@@ -233,6 +233,7 @@ export class StreamHandler {
             resultCount: data.resultCount,
             sources: data.sources,
             knowledgeSources: data.knowledgeSources,
+            status: data.status,
             width: data.width,
             height: data.height,
           },

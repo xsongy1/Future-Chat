@@ -10,15 +10,29 @@
  * 检索范围由 ToolExecutionContext.userId（服务端认证结果）决定，
  * 绝不接受模型/客户端传入的 userId。模型即使编造 knowledge_base_id，
  * 也只会拿到「不存在或无权访问」，不会读到别人的知识库。
+ *
+ * 检索状态（status）：
+ * 返回结果里带机器可读的 status（matched / no_match / empty_knowledge_base /
+ * no_access / invalid_query / error），因为对 RAG 来说"没有可信证据"和"检索失败"
+ * 是两件必须分开说的事——前者要如实说"知识库里没有"，后者要说"检索暂时不可用"，
+ * 而两者都不该让模型拿自己的知识补答。
  */
 
 import type { Tool, ToolExecutionContext } from './types'
 import { retrieve } from '@/server/services/rag'
-import type { KnowledgeSource } from '@/server/services/rag'
+import type { KnowledgeSource, RetrievalStatus } from '@/server/services/rag'
 
-/** 工具返回给上层的结构（写入 tool result，并透传给前端） */
+/**
+ * 工具返回给上层的结构（写入 tool result，并透传给前端）
+ *
+ * `status` 是这次检索的机器可读结论，必须带上：
+ * - 写进 tool result 后前端能区分"没有证据"与"检索失败"（此前两者都是 `resultCount: 0`）；
+ * - 与 `server/services/rag` 的 `RetrievalStatus` 同一套取值，模型侧则由 content 里的
+ *   状态词（如 `no_match`）与系统提示词的规则来约束。
+ */
 interface KnowledgeSearchResponse {
   content: string
+  status: RetrievalStatus
   sources: KnowledgeSource[]
   resultCount: number
   error?: string
@@ -36,7 +50,11 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
     description:
       '检索用户的私有知识库，获取其上传文档中的原文内容。' +
       '凡是涉及用户自己的文件/资料，或用户所在公司、组织、团队的内部规定、制度、政策、流程、标准、额度、时限等问题，都必须先调用此工具获取原文，严禁凭记忆或常识直接作答。' +
-      '如果检索结果不足以回答，要如实说明知识库中没有相关资料。',
+      '如果检索结果不足以回答，要如实说明知识库中没有相关资料。' +
+      '返回的 status 字段表示检索状态：matched=取到片段；no_match=检索正常但没有找到足够可信的证据（此时必须如实说明知识库中没有相关资料，禁止编造或用你自己的知识替代）；' +
+      'empty_knowledge_base=知识库还没有可检索内容（提示用户先上传文档）；no_access=无权访问该知识库；' +
+      'error=检索失败（与“知识库中没有”是两回事，要按“服务暂时不可用”告知用户）。' +
+      'no_match / empty_knowledge_base / no_access 三种状态在返回文本里也会写明状态词。',
     parameters: {
       type: 'object',
       properties: {
@@ -70,6 +88,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
       if (!query || typeof query !== 'string' || !query.trim()) {
         return JSON.stringify({
           content: '检索失败：query 不能为空。',
+          status: 'invalid_query',
           sources: [],
           resultCount: 0,
           error: 'query 不能为空',
@@ -81,6 +100,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
         console.error('[KnowledgeSearch] 缺少执行上下文 userId，拒绝检索')
         return JSON.stringify({
           content: '检索失败：服务端未提供当前用户上下文。',
+          status: 'error',
           sources: [],
           resultCount: 0,
           error: 'missing execution context',
@@ -91,6 +111,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
       if (!apiKey) {
         return JSON.stringify({
           content: '检索失败：未配置 API Key，无法对查询做向量化。',
+          status: 'error',
           sources: [],
           resultCount: 0,
           error: 'API Key not configured',
@@ -108,6 +129,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
 
         return JSON.stringify({
           content: outcome.content,
+          status: outcome.status,
           sources: outcome.sources,
           resultCount: outcome.resultCount,
         } satisfies KnowledgeSearchResponse)
@@ -117,6 +139,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
           console.log('[KnowledgeSearch] 检索被用户取消')
           return JSON.stringify({
             content: '检索已取消。',
+            status: 'error',
             sources: [],
             resultCount: 0,
             error: 'cancelled',
@@ -127,6 +150,7 @@ export function createKnowledgeSearchTool(fallbackApiKey?: string): Tool {
         console.error('[KnowledgeSearch] 检索失败:', msg)
         return JSON.stringify({
           content: `检索失败：${msg}`,
+          status: 'error',
           sources: [],
           resultCount: 0,
           error: msg,

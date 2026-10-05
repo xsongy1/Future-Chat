@@ -128,6 +128,8 @@ export interface ToolResult {
     sources?: SearchSource[]
     /** 知识库来源列表（knowledge_search） */
     knowledgeSources?: KnowledgeSource[]
+    /** 知识库检索状态（knowledge_search，见 KnowledgeRetrievalStatus） */
+    status?: KnowledgeRetrievalStatus
     /** 其他数据 */
     [key: string]: unknown
   }
@@ -167,9 +169,32 @@ export interface ToolInvocation {
     resultCount?: number
     sources?: SearchSource[]
     knowledgeSources?: KnowledgeSource[]
+    /** 知识库检索状态（knowledge_search）：区分"没有证据"与"检索失败" */
+    status?: KnowledgeRetrievalStatus
     [key: string]: unknown
   }
 }
+
+/**
+ * 知识库检索状态（knowledge_search）
+ *
+ * 取值与服务端 `server/services/rag` 的 `RetrievalStatus` 一一对应——那边是唯一真源，
+ * 这里刻意不 import 服务端模块（前端不引 `@/server`，避免把服务端代码带进客户端产物）。
+ * 客户端只做展示，遇到未知取值一律回退成"未找到相关内容"，不会因为服务端新增状态而崩。
+ */
+export type KnowledgeRetrievalStatus =
+  /** 有片段通过门槛 */
+  | 'matched'
+  /** 检索正常但没有足够可信的证据 → "知识库中没有相关资料" */
+  | 'no_match'
+  /** 知识库里还没有可检索内容 */
+  | 'empty_knowledge_base'
+  /** 知识库不存在或无权访问 */
+  | 'no_access'
+  /** query 非法 */
+  | 'invalid_query'
+  /** 检索失败（与"没有证据"是两回事） */
+  | 'error'
 
 /**
  * 消息显示状态
@@ -294,6 +319,13 @@ export interface SSEData {
   sources?: SearchSource[]
   /** 知识库来源列表（knowledge_search tool_result 事件） */
   knowledgeSources?: KnowledgeSource[]
+  /**
+   * 知识库检索状态（knowledge_search tool_result 事件）
+   *
+   * 字段名与 tool result 里持久化的 `status` 保持一致（历史消息还原时读的是同一个字段），
+   * 只是恰好也只有 knowledge_search 会带它。
+   */
+  status?: KnowledgeRetrievalStatus
   /** 预估剩余时间（秒，tool_progress 事件） */
   estimatedTime?: number
   /** 是否被取消（tool_result 事件） */
