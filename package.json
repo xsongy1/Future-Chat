@@ -15,6 +15,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "context:bench": "tsx scripts/context-benchmark.ts",
     "clean:logs": "tsx scripts/remove-console-logs.ts",
     "db:generate": "dotenv -e .env -- prisma generate",
     "db:migrate": "dotenv -e .env -- prisma migrate dev",
