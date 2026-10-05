@@ -8,22 +8,23 @@ AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生�
 
 ## 技术栈
 
-| 项 | 实际情况 |
-| --- | --- |
-| 框架 | **Next.js 15.1.6**（App Router；生产构建为 `output: 'standalone'`） |
-| 语言 | TypeScript 5 |
-| UI | Tailwind CSS 3.4 + shadcn/ui（Radix UI 组件） |
-| 状态管理 | Zustand 5（`features/*/store`） |
-| 数据库 | PostgreSQL 16 + Prisma ORM 6.19 |
-| 认证 | **NextAuth v4（4.24.11）**：Credentials（用户名/密码）+ Google + GitHub；另有自研 JWT（`auth-token` Cookie）作为并存方案 |
-| AI 能力 | 硅基流动 SiliconFlow：对话 + Embedding + TTS/ASR |
-| 联网搜索 | Tavily API |
-| 监控 | Future-monitor-sdk（本仓库工作区包） |
-| 流式协议 | SSE（`text/event-stream`） |
+| 项       | 实际情况                                                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 框架     | **Next.js 15.1.6**（App Router；生产构建为 `output: 'standalone'`）                                                      |
+| 语言     | TypeScript 5                                                                                                             |
+| UI       | Tailwind CSS 3.4 + shadcn/ui（Radix UI 组件）                                                                            |
+| 状态管理 | Zustand 5（`features/*/store`）                                                                                          |
+| 数据库   | PostgreSQL 16 + Prisma ORM 6.19                                                                                          |
+| 认证     | **NextAuth v4（4.24.11）**：Credentials（用户名/密码）+ Google + GitHub；另有自研 JWT（`auth-token` Cookie）作为并存方案 |
+| AI 能力  | 硅基流动 SiliconFlow：对话 + Embedding + TTS/ASR                                                                         |
+| 联网搜索 | Tavily API                                                                                                               |
+| 监控     | Future-monitor-sdk（本仓库工作区包）                                                                                     |
+| 流式协议 | SSE（`text/event-stream`）                                                                                               |
 
 ## 功能
 
 ### 对话
+
 - 流式响应（SSE），支持中途停止
 - 多模型切换：`Qwen/Qwen2.5-72B-Instruct`、`deepseek-ai/DeepSeek-V3.2`（**默认 DeepSeek-V3.2**，Function Calling 更稳定）
 - 思考模式（推理过程可视化，仅支持该参数的模型显示）
@@ -31,13 +32,31 @@ AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生�
 - 消息操作（复制 / 朗读 / 重试 / 编辑）
 - 分享链接（只读分享页）
 
+### 上下文管理（Context Management）
+
+不再「历史有多长就发送多长」，而是按 token 预算分层构建：
+
+- **分层预算**：`窗口 − 输出预留 − 安全边际` 之后，依次给 system / 当前消息 /
+  工具轮次 / 附件 / 历史（摘要 + 最近窗口）分配
+- **最近窗口**：按 token（不是条数）取连续后缀，窗口以 `user` 开头、不产生孤立 tool 消息
+- **增量摘要**：盲区攒够阈值才压缩（低频事件），旧摘要 + 新缺口 → 新摘要并持久化到
+  `Conversation.summary`，用水位线（`summaryUpToMessageId`）保证只摘要未覆盖的部分
+- **附件预算**：装得下则原文全量，装不下则保留头 + 尾并显式标注省略（不做静默截断）
+- **超窗降级**：发送前逐条丢历史 → 截断用户消息；provider 仍报超窗时用降级上下文重试**一次**
+- **可观测**：每次构建输出一行 `[Context] {…}` 结构化指标（估算输入、各层占用、是否压缩等）
+- **不编造价格**：成本单价只从环境变量读，未配置时不做货币估算
+
+> 设计与实测数据见 [`server/services/chat/context/README.md`](server/services/chat/context/README.md)。
+> Before/After 基准报告由 `pnpm context:bench` 生成到 `docs/context-benchmark.{md,json}`
+> （**`docs/` 在 .gitignore 内，报告是生成物、不入库**），`-- --live` 追加真实 API 测量。
+
 ### 工具调用（Function Calling）
 
-| 工具 | 触发方式 | 说明 |
-| --- | --- | --- |
+| 工具               | 触发方式                 | 说明                                   |
+| ------------------ | ------------------------ | -------------------------------------- |
 | `knowledge_search` | 输入框「私有知识库」开关 | 检索私有知识库，可指定单个知识库或全部 |
-| `web_search` | 输入框「联网搜索」开关 | Tavily 搜索，回答附带来源链接 |
-| `generate_image` | 始终可用（AI 自行判断） | SiliconFlow 文生图，带进度条，可取消 |
+| `web_search`       | 输入框「联网搜索」开关   | Tavily 搜索，回答附带来源链接          |
+| `generate_image`   | 始终可用（AI 自行判断）  | SiliconFlow 文生图，带进度条，可取消   |
 
 - 多轮循环最多 5 轮（`MAX_TOOL_ROUNDS`），工具可并行执行
 - **每次请求都有工具白名单**：由用户开关算出 `enabledTools`，贯穿每一轮下发，并在执行前二次校验——关闭知识库后，模型即使点名 `knowledge_search` 也会被拒绝执行
@@ -62,15 +81,18 @@ AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生�
 > 架构细节、阈值取舍、环境变量与运维命令见 [`server/services/rag/README.md`](server/services/rag/README.md)。
 
 ### 语音
+
 - 语音输入：录音转文字（SenseVoice）
 - 语音输出：文字转语音（CosyVoice2，8 种音色）
 - 音色选择持久化
 
 ### 文件（对话附件）
+
 - 上传 `.txt` / `.md`（最大 1MB），后端读取内容后拼进当前对话上下文
 - 与知识库上传是两条独立链路：附件不进知识库、不做向量化
 
 ### 其他
+
 - 深色模式、Markdown 导出、响应式布局
 - Future-monitor-sdk：错误 / 性能 / 网络 / SSE 链路追踪 + Token 成本统计 + 离线队列上报；开发环境带调试面板（`future-monitor-sdk/debug`）
 - 地区校验（GeoChecker）
@@ -116,6 +138,7 @@ pnpm docker:down
 ```
 
 > ⚠️ Docker 相关注意点（真实行为，非理想状态）：
+>
 > - 应用容器跑的是**构建镜像时的源码**。`docker compose up -d`（不带 `--build`）不会重新构建，容易出现"改了代码但线上没变"。
 > - postgres 镜像已从 `postgres:16-alpine` 换成 **`pgvector/pgvector:pg16`**（RAG 需要 `vector` 类型 + HNSW 索引）。镜像基于同一 PostgreSQL 16 大版本，数据卷可直接沿用；`CREATE EXTENSION vector` 由 RAG 迁移里的 `DO` 块自动完成。
 > - 镜像里**不会自动执行 `prisma migrate deploy`**：数据卷为空时表不会被创建，需要手工 `docker compose exec app npx prisma migrate deploy`（或先在宿主迁移好再用同一数据卷）。
@@ -148,37 +171,44 @@ pnpm docker:down
 
 仓库只提供 `.env`（`docker compose` 通过 `env_file` 读取；`.dockerignore` 已把 `.env*` 排除在镜像之外）。
 
-| 变量 | 必需 | 用途 |
-| --- | --- | --- |
-| `DATABASE_URL` | ✅ | Prisma 连接串。本地默认 `postgresql://future_chat:password123@localhost:5433/future_chat` |
-| `SILICONFLOW_API_KEY` | ✅ | 对话 / Embedding / 图片 / TTS / ASR；`generate_image` 与 embedding 依赖它 |
-| `JWT_SECRET` | ✅ | 自研 `auth-token` JWT 签名（生产环境至少 32 字符，否则启动即报错） |
-| `AUTH_SECRET` | ✅ | middleware 用 next-auth `getToken` 校验会话 |
-| `AUTH_TRUST_HOST` | 建议 | NextAuth 反向代理场景 |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | 可选 | Google 登录 |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | 可选 | GitHub 登录 |
-| `TAVILY_API_KEY` | 可选 | `web_search` 工具；未配置则该工具不注册 |
-| `NEXT_PUBLIC_APP_URL` | 可选 | 分享链接拼接，默认 `http://localhost:3000` |
-| `RAG_MIN_SCORE` | 可选 | **已废弃**：旧的绝对余弦阈值。设置后会被当作 `RAG_VECTOR_MIN_SCORE` 处理（见 `server/services/rag/README.md`） |
-| `EMBEDDING_MODEL` | 可选 | 覆盖 Embedding 模型，必须在 `shared/constants/models.ts` 白名单内 |
-| `RAG_RERANK` | 可选 | 精排开关，默认开（`0`/`false`/`off` 关闭）；关闭后退化为 RRF 融合顺序 |
-| `RAG_RERANK_MODEL` | 可选 | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（白名单 `RERANK_MODELS`） |
-| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE` | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分**绝对下限**（默认 0.05，**未标定**，只挡近似 0 分的噪声；承担"最低相关性"前必须用标注数据标定，见 RAG README §1.4） |
-| `RAG_RERANK_MAX_GAP_RATIO` | 可选 | 可选的分数断崖截断（默认 0=关闭）：相邻落差严格大于该比例时截断；**启发式、非标定值** |
-| `RAG_FUSE_TOP` / `RAG_FUSION_TOP_N` / `RAG_FUSION_MIN_RATIO` | 可选 | 进入精排的融合候选数（默认 30）/ 无精排时的名次截断（默认 `max(topK×3,15)`）/ 额外比例阈值（默认 0=不用） |
-| `RAG_VECTOR_MIN_SCORE` | 可选 | 仅"精排不可用"时的余弦兜底下限（默认 0.35），精排生效时不参与判断 |
-| `RAG_HNSW_EF_SEARCH` / `RAG_HNSW_ITERATIVE_SCAN` | 可选 | HNSW 召回旋钮（默认 100 / `relaxed_order`，pgvector ≥ 0.8） |
-| `RAG_VECTOR_BACKEND` | 可选 | `auto`（默认）/ `pgvector` / `app`，可强制走应用层回退路径做对照 |
-| `RAG_EXACT_SCAN_MAX_CHUNKS` | 可选 | 回退路径的扫描上限；**默认不设上限**（全量扫描），设置后会在日志里标记截断 |
-| `RAG_GRAY_LEGACY_QUERY` / `RAG_GRAY_MAX_LEGACY_MODELS` | 可选 | 灰度重建期间是否为新旧模型各查一次（默认开 / 最多 1 个旧模型） |
-| `RAG_WORKER_ENABLED` / `RAG_WORKER_POLL_MS` / `RAG_WORKER_LOCK_TIMEOUT_MS` / `RAG_WORKER_ONCE` | 可选 | 任务 worker 开关 / 轮询间隔（2000ms）/ 锁超时（120s）/ 跑空即退出 |
-| `RAG_BM25_K1` / `RAG_BM25_B` | 可选 | BM25 参数，默认 1.2 / 0.75 |
-| `TRUST_PROXY` | 可选 | 可信代理配置；未设置时**不启用**基于 IP 的登录限流，审计日志也不记录 IP |
-| `IMAGE_STORAGE_DIR` / `IMAGE_URL_PREFIX` | 可选 | 生成图片的落盘目录与 URL 前缀 |
-| `GEO_TEST_MODE` | 可选 | 设为 `block` 可模拟地区拦截 |
-| `NEXT_PUBLIC_MONITOR_SAMPLE_RATE` | 可选 | 监控采样率，默认 1 |
-| `ANALYZE` | 可选 | 设为 `true` 生成 bundle 分析报告 |
-| `OPENAI_API_KEY` | 可选 | 仅作 SiliconFlow Key 缺失时的兜底 |
+| 变量                                                                                                 | 必需 | 用途                                                                                                                                                                 |
+| ---------------------------------------------------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                       | ✅   | Prisma 连接串。本地默认 `postgresql://future_chat:password123@localhost:5433/future_chat`                                                                            |
+| `SILICONFLOW_API_KEY`                                                                                | ✅   | 对话 / Embedding / 图片 / TTS / ASR；`generate_image` 与 embedding 依赖它                                                                                            |
+| `JWT_SECRET`                                                                                         | ✅   | 自研 `auth-token` JWT 签名（生产环境至少 32 字符，否则启动即报错）                                                                                                   |
+| `AUTH_SECRET`                                                                                        | ✅   | middleware 用 next-auth `getToken` 校验会话                                                                                                                          |
+| `AUTH_TRUST_HOST`                                                                                    | 建议 | NextAuth 反向代理场景                                                                                                                                                |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                                                          | 可选 | Google 登录                                                                                                                                                          |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`                                                          | 可选 | GitHub 登录                                                                                                                                                          |
+| `TAVILY_API_KEY`                                                                                     | 可选 | `web_search` 工具；未配置则该工具不注册                                                                                                                              |
+| `NEXT_PUBLIC_APP_URL`                                                                                | 可选 | 分享链接拼接，默认 `http://localhost:3000`                                                                                                                           |
+| `RAG_MIN_SCORE`                                                                                      | 可选 | **已废弃**：旧的绝对余弦阈值。设置后会被当作 `RAG_VECTOR_MIN_SCORE` 处理（见 `server/services/rag/README.md`）                                                       |
+| `EMBEDDING_MODEL`                                                                                    | 可选 | 覆盖 Embedding 模型，必须在 `shared/constants/models.ts` 白名单内                                                                                                    |
+| `RAG_RERANK`                                                                                         | 可选 | 精排开关，默认开（`0`/`false`/`off` 关闭）；关闭后退化为 RRF 融合顺序                                                                                                |
+| `RAG_RERANK_MODEL`                                                                                   | 可选 | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（白名单 `RERANK_MODELS`）                                                                                                   |
+| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE`                                 | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分**绝对下限**（默认 0.05，**未标定**，只挡近似 0 分的噪声；承担"最低相关性"前必须用标注数据标定，见 RAG README §1.4） |
+| `RAG_RERANK_MAX_GAP_RATIO`                                                                           | 可选 | 可选的分数断崖截断（默认 0=关闭）：相邻落差严格大于该比例时截断；**启发式、非标定值**                                                                                |
+| `RAG_FUSE_TOP` / `RAG_FUSION_TOP_N` / `RAG_FUSION_MIN_RATIO`                                         | 可选 | 进入精排的融合候选数（默认 30）/ 无精排时的名次截断（默认 `max(topK×3,15)`）/ 额外比例阈值（默认 0=不用）                                                            |
+| `RAG_VECTOR_MIN_SCORE`                                                                               | 可选 | 仅"精排不可用"时的余弦兜底下限（默认 0.35），精排生效时不参与判断                                                                                                    |
+| `RAG_HNSW_EF_SEARCH` / `RAG_HNSW_ITERATIVE_SCAN`                                                     | 可选 | HNSW 召回旋钮（默认 100 / `relaxed_order`，pgvector ≥ 0.8）                                                                                                          |
+| `RAG_VECTOR_BACKEND`                                                                                 | 可选 | `auto`（默认）/ `pgvector` / `app`，可强制走应用层回退路径做对照                                                                                                     |
+| `RAG_EXACT_SCAN_MAX_CHUNKS`                                                                          | 可选 | 回退路径的扫描上限；**默认不设上限**（全量扫描），设置后会在日志里标记截断                                                                                           |
+| `RAG_GRAY_LEGACY_QUERY` / `RAG_GRAY_MAX_LEGACY_MODELS`                                               | 可选 | 灰度重建期间是否为新旧模型各查一次（默认开 / 最多 1 个旧模型）                                                                                                       |
+| `RAG_WORKER_ENABLED` / `RAG_WORKER_POLL_MS` / `RAG_WORKER_LOCK_TIMEOUT_MS` / `RAG_WORKER_ONCE`       | 可选 | 任务 worker 开关 / 轮询间隔（2000ms）/ 锁超时（120s）/ 跑空即退出                                                                                                    |
+| `RAG_BM25_K1` / `RAG_BM25_B`                                                                         | 可选 | BM25 参数，默认 1.2 / 0.75                                                                                                                                           |
+| `TRUST_PROXY`                                                                                        | 可选 | 可信代理配置；未设置时**不启用**基于 IP 的登录限流，审计日志也不记录 IP                                                                                              |
+| `CONTEXT_WINDOW_OVERRIDE`                                                                            | 可选 | 覆盖模型上下文窗口。未设置时用 `shared/constants/models.ts` 里的**实测下界** 65536（依据：63,318 token 的真实请求被正常受理）；核对 provider 文档后应显式设置        |
+| `CONTEXT_COMPACT_THRESHOLD_RATIO`                                                                    | 可选 | 压缩触发阈值（默认 `0.1`，由 benchmark 扫描定出，见 `context/README.md`）                                                                                            |
+| `CONTEXT_SUMMARY_MAX_TOKENS` / `CONTEXT_SUMMARY_CHUNK_MAX_TOKENS` / `CONTEXT_SUMMARY_TIMEOUT_MS`     | 可选 | 摘要硬上限（800）/ 单次摘要调用输入上限（4000）/ 一次压缩总超时（15000ms）                                                                                           |
+| `CONTEXT_ATTACHMENT_SHARE_RATIO` / `CONTEXT_ATTACHMENT_MAX_TOKENS` / `CONTEXT_ATTACHMENT_MIN_TOKENS` | 可选 | 附件预算比例（0.5）/ 附件总量上限（12000）/ 单附件保底（120）                                                                                                        |
+| `CONTEXT_SAFETY_MARGIN_RATIO` / `CONTEXT_MIN_RECENT_USER_TURNS`                                      | 可选 | 估算安全边际（0.1）/ 至少保留的用户轮次（1）                                                                                                                         |
+| `CONTEXT_METRICS_LOG`                                                                                | 可选 | 设为 `off` 关闭逐请求的 `[Context]` 指标日志                                                                                                                         |
+| `LLM_INPUT_PRICE_PER_1M_TOKENS` / `LLM_OUTPUT_PRICE_PER_1M_TOKENS`                                   | 可选 | token 单价；**未配置则不做成本估算**（不编造价格）                                                                                                                   |
+| `IMAGE_STORAGE_DIR` / `IMAGE_URL_PREFIX`                                                             | 可选 | 生成图片的落盘目录与 URL 前缀                                                                                                                                        |
+| `GEO_TEST_MODE`                                                                                      | 可选 | 设为 `block` 可模拟地区拦截                                                                                                                                          |
+| `NEXT_PUBLIC_MONITOR_SAMPLE_RATE`                                                                    | 可选 | 监控采样率，默认 1                                                                                                                                                   |
+| `ANALYZE`                                                                                            | 可选 | 设为 `true` 生成 bundle 分析报告                                                                                                                                     |
+| `OPENAI_API_KEY`                                                                                     | 可选 | 仅作 SiliconFlow Key 缺失时的兜底                                                                                                                                    |
 
 > 历史文档里出现过 `AUTH_GOOGLE_ID` / `AUTH_GITHUB_ID` / `.env.local`，**这些在当前代码中都不生效**：代码读取的是 `GOOGLE_CLIENT_ID` / `GITHUB_CLIENT_ID`，环境文件是 `.env`。
 >
@@ -191,6 +221,9 @@ pnpm dev / build / start     # 开发 / 构建 / 启动
 pnpm lint                    # ESLint（next/core-web-vitals + typescript）
 pnpm format / format:check   # Prettier
 pnpm test                    # Vitest（服务端纯逻辑 + SDK 单测）
+
+pnpm context:bench           # Before/After 基准 → docs/context-benchmark.{md,json}（生成物，docs/ 不入库）
+pnpm context:bench -- --live # 追加真实 API 测量（TTFT/TTLB + 估算器校准）
 
 pnpm db:generate             # prisma generate
 pnpm db:migrate              # prisma migrate dev
@@ -244,14 +277,15 @@ lib/                          # 前端工具库（仅客户端）
 └── monitor/                  # 监控装配层（消费 future-monitor-sdk）
 
 shared/                       # 中立共享层（前端与 server 均可引用）
-├── constants/models.ts       # 对话模型 + Embedding 模型白名单
+├── constants/models.ts       # 对话模型 + Embedding 模型白名单（含 contextWindow / 输出预留）
 └── utils/sse.ts              # SSE 解析
 
 server/                       # 服务端
 ├── auth/  db/  middleware/  utils/
 ├── repositories/             # conversation / message / user / knowledge / audit-log
 └── services/
-    ├── chat/                 # chat.service（工具白名单）/ stream.handler（多轮循环）/ sse-writer / prompt.builder
+    ├── chat/                 # chat.service / stream.handler / sse-writer / prompt.builder
+    │   └── context/          # 上下文管理（预算 / 窗口 / 压缩 / 附件 / 指标）见其 README
     ├── tools/                # ToolRegistry + web_search / generate_image / knowledge_search
     ├── rag/                  # parse / chunker / index（ingestDocument、retrieve）
     ├── ai/                   # SiliconFlow 对话与 Embedding 调用
@@ -259,6 +293,8 @@ server/                       # 服务端
 
 prisma/                       # schema.prisma + migrations
 packages/future-monitor-sdk/  # 监控 SDK（工作区包，包名 future-monitor-sdk）
+scripts/                      # 运维与基准脚本（含 context-benchmark.ts）
+docs/                         # 设计与基准报告（context-benchmark.md/json）
 test-rag/                     # RAG 测试知识库 + 验收/回归脚本
 ```
 

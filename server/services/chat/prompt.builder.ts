@@ -123,7 +123,46 @@ export function buildSystemPrompt(imageAvailable: boolean = true): string {
 }
 
 /**
- * 构建消息上下文
+ * 拼装最终下发的消息数组（system → 历史 → 当前用户消息）
+ *
+ * 这是**唯一**的拼装实现：上下文管理器（context/manager.ts）与旧的整段历史路径
+ * （buildContextMessages）都走这里，所以 Before / After 的差异只在于
+ * "传进来的是哪一段历史"，而不在于消息格式——否则 benchmark 比的就不是上下文管理，
+ * 而是两种格式的差异。
+ *
+ * @param systemPrompt - 已构建好的 system prompt
+ * @param historyMessages - 会进入上下文的历史消息（可为空）
+ * @param currentUserMessage - 当前用户消息（已含附件）
+ */
+export function assembleMessages(
+  systemPrompt: string,
+  historyMessages: Array<{ role: string; content: string | null }>,
+  currentUserMessage: string
+): Array<{ role: string; content: string | null }> {
+  return [
+    { role: 'system', content: systemPrompt },
+    // 历史消息：只回放 role + content
+    //
+    // 刻意不回放 Message.toolCalls / toolResults：它们是**本次请求内**多轮循环的产物，
+    // 落库只是给前端回显用；把历史里的 tool_calls 重新塞回上下文，
+    // 会要求同时补齐配对的 tool 消息，而配对关系跨轮次、跨消息，容易拼出非法序列。
+    // 当前行为保持不变是本模块的硬约束。
+    ...historyMessages.map((msg) => ({ role: msg.role, content: msg.content })),
+    { role: 'user', content: currentUserMessage },
+  ]
+}
+
+/**
+ * 构建消息上下文（整段历史版本）
+ *
+ * ⚠️ 这是改造前的**原始行为**，保留为 Before 基准实现：
+ * 数据库里有多少历史就拼多少，不做任何 token 预算控制。
+ *
+ * 它已不再被聊天主链路调用（见 chat.service.ts），保留的两个理由：
+ * 1. benchmark 需要一个"代表真实生产行为"的 Before（见 scripts/context-benchmark.ts），
+ *    凭空造一个假 Before 会让对比结果失去意义；
+ * 2. 测试用它做对照，证明上下文管理器确实改变了行为。
+ *
  * @param imageAvailable - 图片生成工具是否可用
  */
 export function buildContextMessages(
@@ -131,22 +170,25 @@ export function buildContextMessages(
   currentUserMessage: string,
   imageAvailable: boolean = true
 ): Array<{ role: string; content: string }> {
-  return [
-    {
-      role: 'system',
-      content: buildSystemPrompt(imageAvailable),
-    },
-    // 历史消息
-    ...historyMessages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    })),
-    // 当前用户消息
-    {
-      role: 'user',
-      content: currentUserMessage,
-    },
-  ]
+  return assembleMessages(
+    buildSystemPrompt(imageAvailable),
+    historyMessages,
+    currentUserMessage
+  ) as Array<{ role: string; content: string }>
+}
+
+/**
+ * 附件块的文本格式
+ *
+ * 导出而不是内联：上下文管理器要对附件做截断后重新拼装，
+ * 如果两边各写一份格式字符串，改动其中一处就会让"截断后的附件"看起来和
+ * "未截断的附件"结构不同，模型对两者的解释也会不一致。
+ */
+export function formatAttachmentBlock(file: {
+  name: string
+  content: string
+}): string {
+  return `\n\n---\n**附件: ${file.name}**\n\`\`\`\n${file.content}\n\`\`\``
 }
 
 /**
@@ -160,12 +202,7 @@ export function appendAttachments(
     return content
   }
 
-  const fileContents = attachments
-    .map(
-      (file) =>
-        `\n\n---\n**附件: ${file.name}**\n\`\`\`\n${file.content}\n\`\`\``
-    )
-    .join('\n')
+  const fileContents = attachments.map(formatAttachmentBlock).join('\n')
 
   return content + fileContents
 }

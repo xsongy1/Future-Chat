@@ -23,8 +23,59 @@ export interface Model {
   supportsThinkingToggle: boolean
   /** 是否为默认模型 */
   default?: boolean
-  /** 最大 tokens */
+  /** 最大 tokens（遗留字段：当前无代码读取，输入预算不依赖它） */
   maxTokens?: number
+  /** 上下文窗口（prompt + completion 的总 token 上限），见 CONSERVATIVE_CONTEXT_WINDOW */
+  contextWindow: number
+}
+
+/**
+ * 保守的上下文窗口默认值
+ *
+ * ⚠️ **这不是从 provider 官方文档核实的精确值**，而是一个**实测出来的下界**：
+ *
+ * 用 `pnpm context:bench -- --live` 对 `deepseek-ai/DeepSeek-V3.2` 发过一次
+ * 真实请求（500 条消息的整段历史），provider 返回的 `prompt_tokens = 63318`
+ * 并且**正常受理**（TTFT 4.5s / TTLB 16.7s）。也就是说真实窗口 ≥ 64K。
+ *
+ * 取 65536 而不是更大的值，是因为它离实测下界只有 3.4% 的余量，
+ * 而预算是按**保守上界估算**算的（实测估算偏高约 2%~19%），再叠加 10% 安全边际后，
+ * 真正发出去的请求会明显小于 64K，不会踩线。
+ *
+ * 方向性很重要：低估窗口的代价是多花一点摘要成本，高估窗口的代价是线上请求直接失败。
+ * 所以这里只声明"已经验证过的下界"，不去猜一个更大的数。
+ *
+ * 核对过 provider 文档后（真实窗口可能是 128K），用环境变量
+ * `CONTEXT_WINDOW_OVERRIDE` 覆盖即可，不需要改这个文件。
+ */
+export const CONSERVATIVE_CONTEXT_WINDOW = 65536
+
+/**
+ * 输出预留的基础值
+ *
+ * 与 `createChatCompletion` 实际下发的 `max_tokens` 是同一个数：预算里给 completion
+ * 留的位置必须等于真实请求里要的位置，否则"预算合法"只是纸面上的合法。
+ * 因此 siliconflow.ts 与 context/budget.ts 都通过 `resolveMaxOutputTokens` 取值，
+ * 不允许任何一方再写一遍字面量。
+ */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 1024
+
+/** 开启思考 / 原生推理模型时的输出预留（thinking_budget 之外仍要占用的 completion 额度） */
+export const THINKING_MAX_OUTPUT_TOKENS = 4096
+
+/**
+ * 解析本次请求的输出预留
+ *
+ * @param model - 模型配置（未命中白名单时为 undefined，此时按非推理模型处理）
+ * @param enableThinking - 用户是否开启思考模式
+ */
+export function resolveMaxOutputTokens(
+  model: Model | undefined,
+  enableThinking: boolean
+): number {
+  return enableThinking || model?.isReasoningModel
+    ? THINKING_MAX_OUTPUT_TOKENS
+    : DEFAULT_MAX_OUTPUT_TOKENS
 }
 
 /**
@@ -39,6 +90,7 @@ export const CHAT_MODELS: Model[] = [
     isReasoningModel: false,
     supportsThinkingToggle: false,
     maxTokens: 8192,
+    contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
   },
   {
     id: 'deepseek-ai/DeepSeek-V3.2',
@@ -52,6 +104,7 @@ export const CHAT_MODELS: Model[] = [
     supportsThinkingToggle: true,
     default: true,
     maxTokens: 8192,
+    contextWindow: CONSERVATIVE_CONTEXT_WINDOW,
   },
 ]
 
@@ -59,21 +112,21 @@ export const CHAT_MODELS: Model[] = [
  * 获取默认模型
  */
 export function getDefaultModel(): Model {
-  return CHAT_MODELS.find(m => m.default) || CHAT_MODELS[0]
+  return CHAT_MODELS.find((m) => m.default) || CHAT_MODELS[0]
 }
 
 /**
  * 根据 ID 获取模型
  */
 export function getModelById(id: string): Model | undefined {
-  return CHAT_MODELS.find(m => m.id === id)
+  return CHAT_MODELS.find((m) => m.id === id)
 }
 
 /**
  * 按类别获取模型
  */
 export function getModelsByCategory(category: Model['category']): Model[] {
-  return CHAT_MODELS.filter(m => m.category === category)
+  return CHAT_MODELS.filter((m) => m.category === category)
 }
 
 /**
@@ -184,7 +237,8 @@ export const RERANK_MODELS: RerankModel[] = [
     id: 'BAAI/bge-reranker-v2-m3',
     name: 'BGE-Reranker-v2-M3',
     // 与默认 embedding 同源：向量召回和精排的打分口径一致，分数分布不会对不上
-    description: '默认模型，中英文 cross-encoder 精排，与 BGE-M3 embedding 同源',
+    description:
+      '默认模型，中英文 cross-encoder 精排，与 BGE-M3 embedding 同源',
     default: true,
   },
   {

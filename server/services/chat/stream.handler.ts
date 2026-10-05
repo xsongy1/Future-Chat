@@ -11,6 +11,7 @@
 
 import { parseSSELine, splitSSEBuffer } from '@/shared/utils/sse'
 import { createChatCompletion } from '@/server/services/ai/siliconflow'
+import { compareEstimatedToActual } from '@/server/services/chat/context'
 import {
   toolRegistry,
   type Tool,
@@ -20,7 +21,10 @@ import {
 } from '@/server/services/tools'
 import { formatToolMessages } from '@/server/services/tools/handler'
 import { executeImageGeneration } from '@/server/services/tools/image-generation'
-import { registerRunningTool, unregisterRunningTool } from '@/server/services/tools/cancellation'
+import {
+  registerRunningTool,
+  unregisterRunningTool,
+} from '@/server/services/tools/cancellation'
 import { SSEWriter } from './sse-writer'
 import { persistMessage, processImageResults } from './message-persister'
 import { pickPersistedAnswer } from './round-answer'
@@ -32,9 +36,20 @@ export interface StreamContext {
   sessionId: string
   /** 客户端断开/取消信号（来自 route handler 的 request.signal） */
   cancelSignal?: AbortSignal
+  /**
+   * 构建上下文时的估算输入 token（来自 ContextManager）
+   *
+   * 只用于把估算值与上游返回的真实 `prompt_tokens` 对照着记一条日志：
+   * 估算器是否真的"偏保守"必须用真实数据验证，不能只靠注释声明。
+   */
+  estimatedInputTokens?: number
 }
 
-type ChatMessage = { role: string; content: string | null; tool_calls?: ToolCall[] }
+type ChatMessage = {
+  role: string
+  content: string | null
+  tool_calls?: ToolCall[]
+}
 
 export interface StreamContextWithTools extends StreamContext {
   apiKey: string
@@ -70,7 +85,11 @@ interface AIResponseResult {
   toolCalls: ToolCall[]
   toolPromises: Promise<ToolExecutionResult>[]
   /** 上游响应的 Token 用量（OpenAI 兼容 usage 字段） */
-  usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+  } | null
 }
 
 const MAX_TOOL_ROUNDS = 5
@@ -93,8 +112,16 @@ async function consumeAIResponse(
   let buffer = ''
   let thinkingContent = ''
   let answerContent = ''
-  let usage: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null
-  const toolCallsChunks: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> = []
+  let usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+  } | null = null
+  const toolCallsChunks: Array<{
+    index: number
+    id?: string
+    function?: { name?: string; arguments?: string }
+  }> = []
   const toolPromises: Promise<ToolExecutionResult>[] = []
   const startedTools = new Set<string>()
 
@@ -142,17 +169,24 @@ async function consumeAIResponse(
             if (!toolCallsChunks[idx]) toolCallsChunks[idx] = { index: idx }
             if (tc.id) toolCallsChunks[idx].id = tc.id
             if (tc.function) {
-              if (!toolCallsChunks[idx].function) toolCallsChunks[idx].function = {}
-              if (tc.function.name) toolCallsChunks[idx].function!.name = tc.function.name
+              if (!toolCallsChunks[idx].function)
+                toolCallsChunks[idx].function = {}
+              if (tc.function.name)
+                toolCallsChunks[idx].function!.name = tc.function.name
               if (tc.function.arguments) {
                 toolCallsChunks[idx].function!.arguments =
-                  (toolCallsChunks[idx].function!.arguments || '') + tc.function.arguments
+                  (toolCallsChunks[idx].function!.arguments || '') +
+                  tc.function.arguments
               }
             }
 
             // 检查是否可以启动工具（有完整的 id、name 和有效的 JSON arguments）
             const chunk = toolCallsChunks[idx]
-            if (chunk.id && chunk.function?.name && !startedTools.has(chunk.id)) {
+            if (
+              chunk.id &&
+              chunk.function?.name &&
+              !startedTools.has(chunk.id)
+            ) {
               // 尝试解析 arguments，如果是完整的 JSON 就启动
               const args = chunk.function.arguments || ''
               if (isCompleteJSON(args)) {
@@ -163,23 +197,38 @@ async function consumeAIResponse(
                   function: { name: chunk.function.name, arguments: args },
                 }
                 writer.sendToolCall(toolCall)
-                console.log(`[Stream] 启动工具: ${chunk.function.name}, args: ${args}`)
-                toolPromises.push(startToolExecution(toolCall, writer, cancelSignal, toolContext, allowedToolNames))
+                console.log(
+                  `[Stream] 启动工具: ${chunk.function.name}, args: ${args}`
+                )
+                toolPromises.push(
+                  startToolExecution(
+                    toolCall,
+                    writer,
+                    cancelSignal,
+                    toolContext,
+                    allowedToolNames
+                  )
+                )
               }
             }
           }
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   }
 
   // 构建完整的 toolCalls
   const toolCalls: ToolCall[] = toolCallsChunks
-    .filter(tc => tc.id && tc.function?.name)
-    .map(tc => ({
+    .filter((tc) => tc.id && tc.function?.name)
+    .map((tc) => ({
       id: tc.id!,
       type: 'function' as const,
-      function: { name: tc.function!.name!, arguments: tc.function!.arguments || '{}' },
+      function: {
+        name: tc.function!.name!,
+        arguments: tc.function!.arguments || '{}',
+      },
     }))
 
   // 流结束后，启动还没启动的工具（以防 JSON 在最后才完整）
@@ -187,8 +236,18 @@ async function consumeAIResponse(
     for (const tc of toolCalls) {
       if (!startedTools.has(tc.id)) {
         writer.sendToolCall(tc)
-        console.log(`[Stream] 延迟启动工具: ${tc.function.name}, args: ${tc.function.arguments}`)
-        toolPromises.push(startToolExecution(tc, writer, cancelSignal, toolContext, allowedToolNames))
+        console.log(
+          `[Stream] 延迟启动工具: ${tc.function.name}, args: ${tc.function.arguments}`
+        )
+        toolPromises.push(
+          startToolExecution(
+            tc,
+            writer,
+            cancelSignal,
+            toolContext,
+            allowedToolNames
+          )
+        )
       }
     }
   }
@@ -216,7 +275,9 @@ async function startToolExecution(
   let args: Record<string, unknown> = {}
   try {
     args = JSON.parse(toolCall.function.arguments)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 
   // 白名单校验（第一道：用户开关的最终裁决权）
   // 仍返回一条 tool 结果，保证 assistant(tool_calls) 与 tool 消息成对出现，
@@ -227,7 +288,9 @@ async function startToolExecution(
       toolCallId: toolCall.id,
       name,
       success: false,
-      content: JSON.stringify({ error: `工具 ${name} 未在本次请求中启用，已拒绝执行` }),
+      content: JSON.stringify({
+        error: `工具 ${name} 未在本次请求中启用，已拒绝执行`,
+      }),
     }
   }
 
@@ -237,9 +300,13 @@ async function startToolExecution(
   try {
     if (name === 'generate_image') {
       // 图片生成：带进度回调
-      const result = await executeImageGeneration(args, (progress) => {
-        writer.sendToolProgress(toolCall.id, progress)
-      }, signal)
+      const result = await executeImageGeneration(
+        args,
+        (progress) => {
+          writer.sendToolProgress(toolCall.id, progress)
+        },
+        signal
+      )
 
       // 工具在完成前被取消（实现未抛出 AbortError 的情况）
       if (signal.aborted) {
@@ -251,10 +318,20 @@ async function startToolExecution(
           content: JSON.stringify({ error: '工具已取消', cancelled: true }),
         }
       }
-      return { toolCallId: toolCall.id, name, success: true, content: JSON.stringify(result) }
+      return {
+        toolCallId: toolCall.id,
+        name,
+        success: true,
+        content: JSON.stringify(result),
+      }
     } else {
       // 其他工具：直接执行（透传执行上下文，供需要归属校验的工具使用）
-      const content = await toolRegistry.executeByName(name, args, signal, toolContext)
+      const content = await toolRegistry.executeByName(
+        name,
+        args,
+        signal,
+        toolContext
+      )
 
       if (signal.aborted) {
         return {
@@ -269,7 +346,8 @@ async function startToolExecution(
     }
   } catch (error) {
     // 用户取消：不当作失败，标记为 cancelled
-    const isCancelled = signal.aborted || (error instanceof Error && error.name === 'AbortError')
+    const isCancelled =
+      signal.aborted || (error instanceof Error && error.name === 'AbortError')
     if (isCancelled) {
       console.log(`[Stream] 工具 ${name} 已取消: ${toolCall.id}`)
       return {
@@ -282,14 +360,23 @@ async function startToolExecution(
     }
     const msg = error instanceof Error ? error.message : '未知错误'
     console.error(`[Stream] 工具 ${name} 失败:`, msg)
-    return { toolCallId: toolCall.id, name, success: false, content: JSON.stringify({ error: msg }) }
+    return {
+      toolCallId: toolCall.id,
+      name,
+      success: false,
+      content: JSON.stringify({ error: msg }),
+    }
   } finally {
     unregisterRunningTool(toolCall.id)
   }
 }
 
 function parseJSON(str: string): Record<string, unknown> {
-  try { return JSON.parse(str) } catch { return {} }
+  try {
+    return JSON.parse(str)
+  } catch {
+    return {}
+  }
 }
 
 /**
@@ -303,6 +390,42 @@ function isCompleteJSON(str: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * 记录"估算输入 token"与上游真实 prompt_tokens 的对照
+ *
+ * 抽成一个函数是因为两条流路径（有工具 / 无工具）都要记：
+ * 只在大流里记，会让大部分请求拿不到校准依据，估算器的系数就永远没有数据可校。
+ *
+ * **只在偏差超出容忍范围时才输出**：这是给"估算器是否漂了"用的告警，
+ * 不是每轮都要打一行噪音。偏差在容差内就完全不输出。
+ *
+ * 方向性：estimationErrorRatio > 0 表示估算**偏低**（危险方向，需要收紧系数），
+ * < 0 表示估算偏高（安全方向，只会让我们提前压缩）。
+ */
+const ESTIMATION_DRIFT_TOLERANCE = 0.25
+
+function logEstimationComparison(
+  estimatedInputTokens: number | undefined,
+  usage: {
+    inputTokens: number
+    outputTokens: number
+    totalTokens: number
+  } | null
+): void {
+  if (!estimatedInputTokens || !usage || usage.totalTokens <= 0) return
+
+  const comparison = compareEstimatedToActual(
+    estimatedInputTokens,
+    usage.inputTokens
+  )
+  if (comparison.estimationErrorRatio === null) return
+  if (Math.abs(comparison.estimationErrorRatio) <= ESTIMATION_DRIFT_TOLERANCE)
+    return
+
+  // warn 而不是 log：生产构建会删掉 console.log（见 context/metrics.ts 的说明）
+  console.warn(`[Context] 估算偏差超出容忍: ${JSON.stringify(comparison)}`)
 }
 
 /**
@@ -320,18 +443,29 @@ export function createSSEStream(
       const writer = new SSEWriter(controller, encoder, sessionId)
 
       try {
-        const { thinkingContent, answerContent, usage } = await consumeAIResponse(reader, writer, cancelSignal, false)
+        const { thinkingContent, answerContent, usage } =
+          await consumeAIResponse(reader, writer, cancelSignal, false)
 
-        await persistMessage(messageId, conversationId, userId, { thinkingContent, answerContent, toolCallsData: null })
+        await persistMessage(messageId, conversationId, userId, {
+          thinkingContent,
+          answerContent,
+          toolCallsData: null,
+        })
 
         // Token 用量透传给前端（监控成本/吞吐）
         if (usage && usage.totalTokens > 0) writer.sendUsage(usage)
+
+        // 估算 vs 实测：无工具这条路径同样要记录，否则大部分请求都拿不到校准依据
+        logEstimationComparison(context.estimatedInputTokens, usage)
 
         writer.sendComplete()
         writer.close()
       } catch (error) {
         // 用户取消导致的 AbortError：静默结束（客户端已断开，前端自行保存了部分内容）
-        if (cancelSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        if (
+          cancelSignal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+        ) {
           console.log('[Stream] 流被取消（AbortError）')
           return
         }
@@ -348,13 +482,32 @@ export function createSSEStreamWithTools(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   context: StreamContextWithTools
 ): ReadableStream {
-  const { messageId, conversationId, userId, sessionId, apiKey, model, contextMessages, enableThinking, thinkingBudget, cancelSignal, allowedTools, knowledgeBaseId } = context
+  const {
+    messageId,
+    conversationId,
+    userId,
+    sessionId,
+    apiKey,
+    model,
+    contextMessages,
+    enableThinking,
+    thinkingBudget,
+    cancelSignal,
+    allowedTools,
+    knowledgeBaseId,
+    estimatedInputTokens,
+  } = context
   const encoder = new TextEncoder()
 
   // 工具执行上下文：把服务端认证得到的 userId、本次请求解析出的 apiKey、
   // 以及用户选择的知识库 ID 透传给工具。
   // knowledge_search 依赖它做知识库归属校验（绝不能从模型参数或客户端请求体取 userId）。
-  const toolContext: ToolExecutionContext = { userId, conversationId, apiKey, knowledgeBaseId }
+  const toolContext: ToolExecutionContext = {
+    userId,
+    conversationId,
+    apiKey,
+    knowledgeBaseId,
+  }
 
   // 本次请求允许的工具：定义（下发给模型）与名字（执行前校验）都从它派生。
   // 关键点：多轮循环里每一轮都用这一份，而不是 toolRegistry.getToolDefinitions()。
@@ -375,9 +528,17 @@ export function createSSEStreamWithTools(
       try {
         let thinkingContent = ''
         let finalAnswerContent = ''
-        let totalUsage: { inputTokens: number; outputTokens: number; totalTokens: number } | null = null
+        let totalUsage: {
+          inputTokens: number
+          outputTokens: number
+          totalTokens: number
+        } | null = null
         const allToolCalls: ToolCall[] = []
-        const allToolResults: Array<{ toolCallId: string; name: string; result: Record<string, unknown> }> = []
+        const allToolResults: Array<{
+          toolCallId: string
+          name: string
+          result: Record<string, unknown>
+        }> = []
 
         let currentMessages = [...contextMessages]
         let currentReader = reader
@@ -394,8 +555,20 @@ export function createSSEStreamWithTools(
           console.log(`[Stream] === 第 ${round} 轮 ===`)
 
           // 读取 AI 响应，同时启动工具执行
-          const { thinkingContent: roundThinking, answerContent: roundAnswer, toolCalls: roundToolCalls, toolPromises, usage: roundUsage } =
-            await consumeAIResponse(currentReader, writer, cancelSignal, true, toolContext, allowedToolNames)
+          const {
+            thinkingContent: roundThinking,
+            answerContent: roundAnswer,
+            toolCalls: roundToolCalls,
+            toolPromises,
+            usage: roundUsage,
+          } = await consumeAIResponse(
+            currentReader,
+            writer,
+            cancelSignal,
+            true,
+            toolContext,
+            allowedToolNames
+          )
 
           // 多轮 Token 用量累加（每轮请求都会产生 usage）
           if (roundUsage && roundUsage.totalTokens > 0) {
@@ -408,8 +581,13 @@ export function createSSEStreamWithTools(
           thinkingContent += roundThinking
           // 每轮都记最后一个有内容的回答：这样"轮次跑满上限退出"时也不会落库空内容
           // （只有无工具调用那条分支赋值的话，跑满 5 轮会把已经流给前端的正文丢掉）
-          finalAnswerContent = pickPersistedAnswer(finalAnswerContent, roundAnswer)
-          console.log(`[Stream] AI 返回: answer=${roundAnswer.length}字, tools=${roundToolCalls.length}个`)
+          finalAnswerContent = pickPersistedAnswer(
+            finalAnswerContent,
+            roundAnswer
+          )
+          console.log(
+            `[Stream] AI 返回: answer=${roundAnswer.length}字, tools=${roundToolCalls.length}个`
+          )
 
           // 没有工具调用，结束
           if (roundToolCalls.length === 0) {
@@ -429,7 +607,11 @@ export function createSSEStreamWithTools(
             allToolResults.push({
               toolCallId: result.toolCallId,
               name: result.name,
-              result: { success: result.success, cancelled: result.cancelled, ...parseJSON(result.content) },
+              result: {
+                success: result.success,
+                cancelled: result.cancelled,
+                ...parseJSON(result.content),
+              },
             })
           }
 
@@ -437,7 +619,11 @@ export function createSSEStreamWithTools(
           const toolMessages = formatToolMessages(toolResults)
           currentMessages = [
             ...currentMessages,
-            { role: 'assistant', content: roundAnswer || null, tool_calls: roundToolCalls },
+            {
+              role: 'assistant',
+              content: roundAnswer || null,
+              tool_calls: roundToolCalls,
+            },
             ...(toolMessages as ChatMessage[]),
           ]
 
@@ -447,7 +633,10 @@ export function createSSEStreamWithTools(
           console.log('[Stream] 发起下一轮 AI 请求')
           const { reader: nextReader } = await createChatCompletion(apiKey, {
             model,
-            messages: currentMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+            messages: currentMessages as Array<{
+              role: 'system' | 'user' | 'assistant'
+              content: string
+            }>,
             enableThinking,
             thinkingBudget,
             tools: toolDefinitions.length > 0 ? toolDefinitions : undefined,
@@ -472,7 +661,11 @@ export function createSSEStreamWithTools(
         }
 
         // 处理图片结果
-        const contentWithImages = processImageResults(finalAnswerContent, allToolCalls, allToolResults)
+        const contentWithImages = processImageResults(
+          finalAnswerContent,
+          allToolCalls,
+          allToolResults
+        )
 
         // 保存消息
         await persistMessage(messageId, conversationId, userId, {
@@ -483,14 +676,22 @@ export function createSSEStreamWithTools(
         })
 
         // Token 用量透传给前端（多轮累加）
-        if (totalUsage && totalUsage.totalTokens > 0) writer.sendUsage(totalUsage)
+        if (totalUsage && totalUsage.totalTokens > 0)
+          writer.sendUsage(totalUsage)
+
+        // 估算值 vs 实测值：多轮时实测值是每轮累加的，故只比首轮的输入量没有意义，
+        // 这里记录"估算 vs 实测输入合计"，用于事后校准估算器的系数。
+        logEstimationComparison(estimatedInputTokens, totalUsage)
 
         writer.sendComplete()
         writer.close()
         console.log('[Stream] 完成')
       } catch (error) {
         // 用户取消导致的 AbortError：静默结束（客户端已断开，前端自行保存了部分内容）
-        if (cancelSignal?.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        if (
+          cancelSignal?.aborted ||
+          (error instanceof Error && error.name === 'AbortError')
+        ) {
           console.log('[Stream] 流被取消（AbortError）')
           return
         }

@@ -1,6 +1,6 @@
 /**
  * Chat Service - 聊天核心业务逻辑
- * 
+ *
  * 负责：
  * - 会话管理
  * - 消息创建
@@ -14,11 +14,15 @@ import { prisma } from '@/server/db/client'
 import { ConversationRepository } from '@/server/repositories/conversation.repository'
 import { MessageRepository } from '@/server/repositories/message.repository'
 import { createChatCompletion } from '@/server/services/ai/siliconflow'
-import { getDefaultModel } from '@/shared/constants/models'
-import { buildContextMessages, appendAttachments } from './prompt.builder'
+import { getDefaultModel, getModelById } from '@/shared/constants/models'
+import { buildSystemPrompt } from './prompt.builder'
+import { buildManagedContext, isContextLengthError } from './context'
 import { createSSEStream, createSSEStreamWithTools } from './stream.handler'
-import { toolRegistry, ensureToolsReady, type Tool } from '@/server/services/tools'
-
+import {
+  toolRegistry,
+  ensureToolsReady,
+  type Tool,
+} from '@/server/services/tools'
 
 export interface ChatRequest {
   content: string
@@ -35,7 +39,12 @@ export interface ChatRequest {
   imageConfig?: { prompt: string; negative_prompt?: string; image_size: string }
   userMessageId?: string
   aiMessageId?: string
-  attachments?: Array<{ name: string; content: string; type: string; size: number }>
+  attachments?: Array<{
+    name: string
+    content: string
+    type: string
+    size: number
+  }>
 }
 
 export interface ChatResponse {
@@ -83,7 +92,13 @@ export async function handleChatRequest(
 
   // 2. 创建消息记录（ID 优先取客户端生成的 nanoid，兜底同样用 nanoid，避免两套 ID 格式）
   const messageId = aiMessageId || nanoid()
-  await createMessages(conversation.id, content, userMessageId, messageId, attachments)
+  await createMessages(
+    conversation.id,
+    content,
+    userMessageId,
+    messageId,
+    attachments
+  )
 
   // 3. 更新会话标题（如果是第一条消息）
   const updatedTitle = await updateConversationTitle(conversation, content)
@@ -108,41 +123,115 @@ export async function handleChatRequest(
   if (imageAvailable) {
     enabledTools.push(toolRegistry.get('generate_image')!)
   }
-  const tools = enabledTools.length > 0
-    ? enabledTools.map(tool => ({
-        type: 'function' as const,
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-        },
-      }))
-    : undefined
+  const tools =
+    enabledTools.length > 0
+      ? enabledTools.map((tool) => ({
+          type: 'function' as const,
+          function: {
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters,
+          },
+        }))
+      : undefined
 
   // 调试日志
-  console.log('[ChatService] Enabled tools:', enabledTools.map(t => t.name))
+  console.log(
+    '[ChatService] Enabled tools:',
+    enabledTools.map((t) => t.name)
+  )
   if (!imageAvailable) {
-    console.log('[ChatService] Image generation unavailable, AI will be notified')
+    console.log(
+      '[ChatService] Image generation unavailable, AI will be notified'
+    )
   }
 
-  // 5. 获取历史消息并构建上下文（传递图片可用状态）
-  const historyMessages = await MessageRepository.findByConversationId(conversation.id)
-  const currentUserMessage = appendAttachments(content, attachments)
-  const contextMessages = buildContextMessages(historyMessages, currentUserMessage, imageAvailable)
+  // 5. 获取历史消息并构建上下文
+  //
+  // 这里是本次改造的核心：不再"数据库里有多少历史就发多少"，而是交给
+  // ContextManager 按 token 预算分层构建（附件预算 / 最近窗口 / 增量摘要 / 发送前校验）。
+  // 详细设计与取舍见 server/services/chat/context/manager.ts 与 docs/context-management.md
+  const historyMessages = await MessageRepository.findByConversationId(
+    conversation.id
+  )
+  const systemPrompt = buildSystemPrompt(imageAvailable)
+
+  const managed = await buildManagedContext({
+    systemPrompt,
+    historyMessages: historyMessages.map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+    })),
+    currentUserMessage: content,
+    attachments,
+    // 白名单外的模型由 createChatCompletion 负责报错；这里拿不到配置时
+    // 只能依赖 CONTEXT_WINDOW_OVERRIDE 才能确定窗口（见 resolveContextWindowPlan）
+    model: getModelById(model),
+    enableThinking,
+    // 工具轮次预留按"本轮真正启用的工具"算：没开知识库就不为它预留
+    enabledToolNames: enabledTools.map((tool) => tool.name),
+    summaryState: {
+      summary: conversation.summary,
+      summaryUpdatedAt: conversation.summaryUpdatedAt,
+      summaryUpToMessageId: conversation.summaryUpToMessageId,
+    },
+    compaction: {
+      apiKey,
+      model,
+      // CAS 写入：并发压缩时只有第一个请求能写成功（详见 ConversationRepository.saveSummary）
+      save: (summary, watermarkMessageId) =>
+        ConversationRepository.saveSummary(
+          conversation.id,
+          { summary, summaryUpToMessageId: watermarkMessageId },
+          conversation.summaryUpdatedAt
+        ),
+    },
+    cancelSignal: signal,
+  })
 
   // 6. 调用 AI API
-  const { reader } = await createChatCompletion(apiKey, {
+  //
+  // 预算在发送前已经校验过，provider 仍然报超窗只能是两种情况：
+  // 上游真实窗口小于我们声明的保守值，或估算与实际偏差过大。
+  // 此时用降级上下文重试**一次**——不允许无限重试，否则一次失败会变成一串计费请求。
+  const requestOptions = {
     model,
-    messages: contextMessages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     enableThinking,
     thinkingBudget,
     tools,
     signal,
-  })
+  }
+
+  let reader: Awaited<ReturnType<typeof createChatCompletion>>['reader']
+  let contextMessages = managed.messages
+
+  try {
+    ;({ reader } = await createChatCompletion(apiKey, {
+      ...requestOptions,
+      messages: contextMessages as Array<{
+        role: 'system' | 'user' | 'assistant'
+        content: string
+      }>,
+    }))
+  } catch (error) {
+    if (!isContextLengthError(error) || signal?.aborted) {
+      throw error
+    }
+    console.warn('[ChatService] 上游报上下文超限，用降级上下文重试一次')
+    contextMessages = managed.degradedMessages
+    ;({ reader } = await createChatCompletion(apiKey, {
+      ...requestOptions,
+      messages: contextMessages as Array<{
+        role: 'system' | 'user' | 'assistant'
+        content: string
+      }>,
+    }))
+  }
 
   // 7. 创建 SSE 流
   const sessionId = Date.now().toString()
-  
+
   // 如果有可用工具，使用支持工具调用的流处理器
   const hasTools = enabledTools.length > 0
   const stream = hasTools
@@ -153,13 +242,19 @@ export async function handleChatRequest(
         sessionId,
         apiKey,
         model,
-        contextMessages: contextMessages as Array<{ role: string; content: string }>,
+        contextMessages: contextMessages as Array<{
+          role: string
+          content: string
+        }>,
         enableThinking,
         thinkingBudget,
         cancelSignal: signal,
         // 本次请求允许的工具集合：多轮循环里每轮都用它下发，并在执行前做白名单校验
         allowedTools: enabledTools,
         knowledgeBaseId,
+        // 用于把"估算输入 token"与上游返回的真实 prompt_tokens 对照着记一条日志：
+        // 这是验证估算器是否真的保守的唯一证据来源。
+        estimatedInputTokens: managed.metrics.estimatedInputTokens,
       })
     : createSSEStream(reader, {
         messageId,
@@ -167,6 +262,7 @@ export async function handleChatRequest(
         userId,
         sessionId,
         cancelSignal: signal,
+        estimatedInputTokens: managed.metrics.estimatedInputTokens,
       })
 
   return {
@@ -185,7 +281,10 @@ async function getOrCreateConversation(
   userId: string
 ) {
   if (conversationId) {
-    const conversation = await ConversationRepository.findById(conversationId, userId)
+    const conversation = await ConversationRepository.findById(
+      conversationId,
+      userId
+    )
     if (!conversation) {
       throw new NotFoundError('Conversation not found')
     }
@@ -202,7 +301,12 @@ async function createMessages(
   content: string,
   userMessageId: string | undefined,
   aiMessageId: string,
-  attachments?: Array<{ name: string; content: string; type: string; size: number }>
+  attachments?: Array<{
+    name: string
+    content: string
+    type: string
+    size: number
+  }>
 ): Promise<void> {
   const now = new Date()
   const userMessageTime = now
@@ -230,7 +334,8 @@ async function createMessages(
         },
       }),
     ])
-  } else {//一般对应 “重试”这一操作
+  } else {
+    //一般对应 “重试”这一操作
     await prisma.message.create({
       data: {
         id: aiMessageId,
@@ -255,7 +360,8 @@ async function updateConversationTitle(
   })
 
   if (messageCount === 2 && conversation.title === '新对话') {
-    const newTitle = content.trim().substring(0, 20) + (content.length > 20 ? '...' : '')
+    const newTitle =
+      content.trim().substring(0, 20) + (content.length > 20 ? '...' : '')
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: { title: newTitle },

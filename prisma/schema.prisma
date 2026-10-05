@@ -113,6 +113,17 @@ model Conversation {
   lastViewedAt DateTime?
   viewCount    Int       @default(0)
 
+  // ============ 上下文管理：长期记忆（Recent Window + Summary）============
+  /// 历史压缩摘要。窗口负责"最近的对话"，摘要负责"更早的对话"，
+  /// 两者合起来才是模型看到的完整历史。由 server/services/chat/context 维护。
+  summary              String?   @db.Text
+  /// 摘要最后写入时间。除了可观测，它还兼任并发压缩的 CAS 版本号：
+  /// 两个请求同时压缩时，只有读到同一个旧值的那个能写成功（见 ConversationRepository.saveSummary）。
+  summaryUpdatedAt     DateTime?
+  /// 摘要覆盖到的最后一条消息 ID（水位线）。下次压缩据此只摘要"水位线之后"的新内容，
+  /// 而不是把整段历史重摘一遍——这是摘要成本不随对话长度线性增长的关键。
+  summaryUpToMessageId String?
+
   @@index([userId, updatedAt(sort: Desc)])
   @@index([shareToken])
   @@index([userId, isPinned, pinnedAt(sort: Desc)])

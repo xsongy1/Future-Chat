@@ -59,7 +59,7 @@ export { resolveEmbeddingModelId } from './embedding'
 export { MAX_CHUNKS_PER_DOCUMENT } from './ingest'
 
 /** 默认返回片段数 */
-const DEFAULT_TOP_K = 5
+export const DEFAULT_TOP_K = 5
 
 /** 单路召回候选数 = max(topK × 倍数, 下限)：融合与精排都需要比最终结果更多的候选才有得挑 */
 const CANDIDATE_MULTIPLIER = 8
@@ -73,8 +73,13 @@ const DEFAULT_VECTOR_MIN_SCORE = 0.35
 
 /**
  * 每个片段在结果文本中的最大字符数（防止单片段撑爆上下文）
+ *
+ * 导出给上下文预算使用：knowledge_search 一次最多回 TOP_K × MAX_SNIPPET_CHARS 字符，
+ * 上下文管理器要按这个真实上限预留工具轮次预算。有一条守卫测试
+ * （context/__tests__/budget.test.ts）断言预算里的估值仍然覆盖这两个常量，
+ * 防止这里改了上限、预算却没跟着改。
  */
-const MAX_SNIPPET_CHARS = 600
+export const MAX_SNIPPET_CHARS = 600
 
 /** 给前端展示的来源条目（与 web_search 的 URL 来源不同，这里是文件来源） */
 export interface KnowledgeSource {
@@ -114,7 +119,12 @@ export interface RetrievalDebug {
     legacyModels: string[]
   }
   lexical: { enabled: boolean; hits: number; terms: number }
-  rerank: { enabled: boolean; applied: boolean; model: string; candidates: number }
+  rerank: {
+    enabled: boolean
+    applied: boolean
+    model: string
+    candidates: number
+  }
   fused: number
   selected: number
   /**
@@ -214,11 +224,19 @@ function envInt(name: string, fallback: number, min = 1): number {
   const raw = process.env[name]
   const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN
   if (Number.isInteger(parsed) && parsed >= min) return parsed
-  if (raw) console.warn(`[RAG] ${name}="${raw}" 不是 >= ${min} 的整数，使用默认值 ${fallback}`)
+  if (raw)
+    console.warn(
+      `[RAG] ${name}="${raw}" 不是 >= ${min} 的整数，使用默认值 ${fallback}`
+    )
   return fallback
 }
 
-function envFloat(name: string, fallback: number, min: number, max: number): number {
+function envFloat(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
   const raw = process.env[name]
   if (raw === undefined || raw === '') return fallback
   const parsed = Number.parseFloat(raw)
@@ -302,7 +320,14 @@ export async function retrieve(params: {
   topK?: number
   signal?: AbortSignal
 }): Promise<RetrievalOutcome> {
-  const { userId, query, apiKey, knowledgeBaseId, topK = DEFAULT_TOP_K, signal } = params
+  const {
+    userId,
+    query,
+    apiKey,
+    knowledgeBaseId,
+    topK = DEFAULT_TOP_K,
+    signal,
+  } = params
 
   const trimmedQuery = query?.trim()
   if (!trimmedQuery) {
@@ -350,7 +375,8 @@ export async function retrieve(params: {
   let unknownModelCount = 0
 
   try {
-    const distribution = await KnowledgeRepository.findChunkEmbeddingModels(ownedBaseIds)
+    const distribution =
+      await KnowledgeRepository.findChunkEmbeddingModels(ownedBaseIds)
     legacyModels = distribution
       .filter((row) => row.model !== null && row.model !== activeModel)
       .sort((a, b) => b.count - a.count)
@@ -368,7 +394,12 @@ export async function retrieve(params: {
   // ---- 3. 查询向量化（当前模型；有旧模型时再为旧模型算一次） ----
   let activeVector: number[]
   try {
-    const result = await embedQuery({ apiKey, query: trimmedQuery, model: activeModel, signal })
+    const result = await embedQuery({
+      apiKey,
+      query: trimmedQuery,
+      model: activeModel,
+      signal,
+    })
     activeVector = result.vector
   } catch (error) {
     const msg = error instanceof Error ? error.message : '未知错误'
@@ -386,11 +417,18 @@ export async function retrieve(params: {
   if (grayQueryEnabled && legacyModels.length > 0) {
     for (const model of legacyModels.slice(0, maxLegacyModels)) {
       try {
-        const result = await embedQuery({ apiKey, query: trimmedQuery, model, signal })
+        const result = await embedQuery({
+          apiKey,
+          query: trimmedQuery,
+          model,
+          signal,
+        })
         legacyVectors.push({ model, vector: result.vector })
       } catch (error) {
         const msg = error instanceof Error ? error.message : '未知错误'
-        degraded.push(`旧模型 ${model} 的查询向量化失败（${msg}），该模型的片段本次未参与检索`)
+        degraded.push(
+          `旧模型 ${model} 的查询向量化失败（${msg}），该模型的片段本次未参与检索`
+        )
       }
     }
 
@@ -426,7 +464,10 @@ export async function retrieve(params: {
   let scanDimMismatch: number | undefined
   let scanTruncated: boolean | undefined
 
-  const collect = (hits: Array<{ chunk: RetrievedChunk; score: number }>, channel: RankedHit['channel']) => {
+  const collect = (
+    hits: Array<{ chunk: RetrievedChunk; score: number }>,
+    channel: RankedHit['channel']
+  ) => {
     if (hits.length === 0) return
     for (const hit of hits) {
       // 同一片段可能被多个通道命中：保留首个写入的 chunk 元数据即可（内容相同）
@@ -518,7 +559,11 @@ export async function retrieve(params: {
       truncated: scanTruncated,
       legacyModels: legacyVectors.map((l) => l.model),
     },
-    lexical: { enabled: lexicalEnabled, hits: lexicalHits, terms: lexicalTerms },
+    lexical: {
+      enabled: lexicalEnabled,
+      hits: lexicalHits,
+      terms: lexicalTerms,
+    },
     rerank: {
       enabled: isRerankEnabled(),
       applied: false,
@@ -537,7 +582,8 @@ export async function retrieve(params: {
     // 这两种情况给模型的提示完全不同（前者要用户先传文档）
     let totalChunks = 0
     try {
-      totalChunks = await KnowledgeRepository.countRetrievableChunks(ownedBaseIds)
+      totalChunks =
+        await KnowledgeRepository.countRetrievableChunks(ownedBaseIds)
     } catch {
       // 计数失败不影响结论：按"有内容但没匹配上"处理
       totalChunks = 1
@@ -752,7 +798,9 @@ export async function retrieve(params: {
       ...(fusedHit?.scores.lexical !== undefined
         ? { lexicalScore: Number(fusedHit.scores.lexical.toFixed(4)) }
         : {}),
-      ...(baseDebug.rerank.applied ? { rerankScore: Number(hit.score.toFixed(4)) } : {}),
+      ...(baseDebug.rerank.applied
+        ? { rerankScore: Number(hit.score.toFixed(4)) }
+        : {}),
     })
   })
 
@@ -837,7 +885,12 @@ function emptyDebug(): RetrievalDebug {
     embeddingDim: 0,
     vector: { backend: 'unavailable', hits: 0, legacyModels: [] },
     lexical: { enabled: false, hits: 0, terms: 0 },
-    rerank: { enabled: isRerankEnabled(), applied: false, model: '', candidates: 0 },
+    rerank: {
+      enabled: isRerankEnabled(),
+      applied: false,
+      model: '',
+      candidates: 0,
+    },
     fused: 0,
     selected: 0,
     threshold: emptyThreshold(),

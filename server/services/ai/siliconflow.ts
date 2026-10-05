@@ -1,6 +1,6 @@
 /**
  * SiliconFlow AI API 封装
- * 
+ *
  * 负责与 SiliconFlow API 的通信
  */
 
@@ -11,6 +11,7 @@ import {
   getModelById,
   getEmbeddingModelById,
   getRerankModelById,
+  resolveMaxOutputTokens,
 } from '@/shared/constants/models'
 
 const SILICONFLOW_API_URL = 'https://api.siliconflow.cn/v1/chat/completions'
@@ -28,7 +29,8 @@ export interface ChatCompletionOptions {
   enableThinking?: boolean
   thinkingBudget?: number
   tools?: unknown[]
-  toolChoice?: 'auto' | 'required' | { type: 'function'; function: { name: string } }
+  toolChoice?:
+    'auto' | 'required' | { type: 'function'; function: { name: string } }
   /** 取消信号：客户端断开或用户取消时中断上游请求 */
   signal?: AbortSignal
 }
@@ -44,24 +46,34 @@ export async function createChatCompletion(
   apiKey: string,
   options: ChatCompletionOptions
 ): Promise<SiliconFlowResponse> {
-  const { model, messages, enableThinking = false, thinkingBudget = 4096, tools, toolChoice, signal } = options
-  
+  const {
+    model,
+    messages,
+    enableThinking = false,
+    thinkingBudget = 4096,
+    tools,
+    toolChoice,
+    signal,
+  } = options
+
   const modelInfo = getModelById(model)
 
   // 白名单校验：防止配置漂移导致请求打到未授权/已下线的模型
   if (!modelInfo) {
     throw new Error(
-      `Unsupported model "${model}". Allowed models: ${CHAT_MODELS.map(m => m.id).join(', ')}`
+      `Unsupported model "${model}". Allowed models: ${CHAT_MODELS.map((m) => m.id).join(', ')}`
     )
   }
-  
+
   // 构建请求体
+  // max_tokens 与上下文预算里的 outputReserve 共用 resolveMaxOutputTokens：
+  // 预算按 4096/1024 留位置，请求就必须按同一个数下发，否则预算只是纸面合法。
   const requestBody: Record<string, unknown> = {
     model,
     messages,
     stream: true,
     temperature: 0.7,
-    max_tokens: enableThinking || modelInfo?.isReasoningModel ? 4096 : 1024,
+    max_tokens: resolveMaxOutputTokens(modelInfo, enableThinking),
   }
 
   // Reasoning 模型：只用 thinking_budget
@@ -134,12 +146,15 @@ export async function createEmbedding(
   const modelInfo = getEmbeddingModelById(model)
   if (!modelInfo) {
     throw new Error(
-      `Unsupported embedding model "${model}". Allowed models: ${EMBEDDING_MODELS.map(m => m.id).join(', ')}`
+      `Unsupported embedding model "${model}". Allowed models: ${EMBEDDING_MODELS.map((m) => m.id).join(', ')}`
     )
   }
 
   const timeoutController = new AbortController()
-  const timeoutId = setTimeout(() => timeoutController.abort(), EMBEDDING_TIMEOUT)
+  const timeoutId = setTimeout(
+    () => timeoutController.abort(),
+    EMBEDDING_TIMEOUT
+  )
 
   const fetchSignal = signal
     ? AbortSignal.any([timeoutController.signal, signal])
@@ -175,7 +190,9 @@ export async function createEmbedding(
     }
 
     // 上游不保证数组顺序，按 index 归位后再交给调用方
-    const sorted = [...data].sort((a, b) => a.index - b.index).map((d) => d.embedding)
+    const sorted = [...data]
+      .sort((a, b) => a.index - b.index)
+      .map((d) => d.embedding)
 
     // 维度漂移防护：白名单里的 dimensions 与实际不符时，存进去的向量长度会不一致
     const actualDim = sorted[0]?.length ?? 0
@@ -225,7 +242,7 @@ export async function createRerank(
   const modelInfo = getRerankModelById(model)
   if (!modelInfo) {
     throw new Error(
-      `Unsupported rerank model "${model}". Allowed models: ${RERANK_MODELS.map(m => m.id).join(', ')}`
+      `Unsupported rerank model "${model}". Allowed models: ${RERANK_MODELS.map((m) => m.id).join(', ')}`
     )
   }
 
@@ -254,7 +271,9 @@ export async function createRerank(
 
     if (!response.ok) {
       const errorText = await response.text()
-      throw new Error(`SiliconFlow rerank error: ${response.status} - ${errorText}`)
+      throw new Error(
+        `SiliconFlow rerank error: ${response.status} - ${errorText}`
+      )
     }
 
     const json = (await response.json()) as {
@@ -277,7 +296,10 @@ export async function createRerank(
 
     // 越界 index 不可放过：分数会贴到错误的片段上，比"没有精排"更糟
     const outOfRange = results.find(
-      (r) => !Number.isInteger(r?.index) || r.index < 0 || r.index >= documents.length
+      (r) =>
+        !Number.isInteger(r?.index) ||
+        r.index < 0 ||
+        r.index >= documents.length
     )
     if (outOfRange) {
       throw new Error(
