@@ -19,6 +19,9 @@ const eslintConfig = [
       'next-env.d.ts',
       'types/next-auth.d.ts',
       'packages/future-monitor-sdk/dist/**',
+      // docs/ 在 .gitignore 内，只存放本地生成的基准报告与测量产物
+      // （含压缩后的 SDK bundle、.mts 脚本），不是源码，不参与 lint
+      'docs/**',
     ],
   },
   {
