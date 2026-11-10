@@ -1,328 +1,132 @@
 # Future-Chat
 
-AI 对话应用：多模型对话 + **Tool Calling**（联网搜索 / 图片生成 / **私有知识库 RAG**）+ 语音交互 + 全链路监控。
-
-> 本文档已按当前源码逐一核对（框架版本、脚本、环境变量、接口、目录结构）。文中标注了与代码不一致的历史写法，请以本文为准。
->
-> 命名说明：项目名为 **Future-Chat**；配套监控 SDK 名为 **Future-monitor-sdk**（工作区包 `packages/future-monitor-sdk`，包名 `future-monitor-sdk`）。
+AI 对话应用：多模型流式对话 + 工具调用（联网搜索 / 文生图 / 私有知识库 RAG）+ 语音交互 + 全链路监控。
 
 ## 技术栈
 
-| 项       | 实际情况                                                                                                                 |
-| -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 框架     | **Next.js 15.1.6**（App Router；生产构建为 `output: 'standalone'`）                                                      |
-| 语言     | TypeScript 5                                                                                                             |
-| UI       | Tailwind CSS 3.4 + shadcn/ui（Radix UI 组件）                                                                            |
-| 状态管理 | Zustand 5（`features/*/store`）                                                                                          |
-| 数据库   | PostgreSQL 16 + Prisma ORM 6.19                                                                                          |
-| 认证     | **NextAuth v4（4.24.11）**：Credentials（用户名/密码）+ Google + GitHub；另有自研 JWT（`auth-token` Cookie）作为并存方案 |
-| AI 能力  | 硅基流动 SiliconFlow：对话 + Embedding + TTS/ASR                                                                         |
-| 联网搜索 | Tavily API                                                                                                               |
-| 监控     | Future-monitor-sdk（本仓库工作区包）                                                                                     |
-| 流式协议 | SSE（`text/event-stream`）                                                                                               |
+| 分类     | 技术                                                               |
+| -------- | ------------------------------------------------------------------ |
+| 框架     | Next.js 15（App Router，生产构建 `output: 'standalone'`）          |
+| 语言     | TypeScript 5                                                       |
+| UI       | Tailwind CSS 3.4 + shadcn/ui（Radix UI）                           |
+| 状态管理 | Zustand 5                                                          |
+| 数据库   | PostgreSQL 16 + Prisma ORM 6（pgvector 向量检索）                  |
+| 认证     | NextAuth v4（Credentials / Google / GitHub）+ 自研 JWT Cookie      |
+| AI 能力  | 硅基流动 SiliconFlow：对话、Embedding、Rerank、TTS / ASR           |
+| 联网搜索 | Tavily API                                                         |
+| 流式协议 | SSE（`text/event-stream`）                                         |
+| 监控     | Future-monitor-sdk（仓库内工作区包 `packages/future-monitor-sdk`） |
+| 测试     | Vitest（服务端纯逻辑 + SDK 单测）                                  |
 
 ## 功能
 
 ### 对话
 
-- 流式响应（SSE），支持中途停止
-- 多模型切换：`Qwen/Qwen2.5-72B-Instruct`、`deepseek-ai/DeepSeek-V3.2`（**默认 DeepSeek-V3.2**，Function Calling 更稳定）
-- 思考模式（推理过程可视化，仅支持该参数的模型显示）
-- 会话管理（创建 / 删除 / 重命名 / 置顶）
-- 消息操作（复制 / 朗读 / 重试 / 编辑）
+- SSE 流式响应，支持中途停止
+- 多模型切换：`deepseek-ai/DeepSeek-V3.2`（默认，工具调用更稳定）、`Qwen/Qwen2.5-72B-Instruct`
+- 思考模式（推理过程可视化）
+- 会话管理：创建 / 删除 / 重命名 / 置顶
+- 消息操作：复制 / 朗读 / 重试 / 编辑
 - 分享链接（只读分享页）
-
-### 上下文管理（Context Management）
-
-不再「历史有多长就发送多长」，而是按 token 预算分层构建：
-
-- **分层预算**：`窗口 − 输出预留 − 安全边际` 之后，依次给 system / 当前消息 /
-  工具轮次 / 附件 / 历史（摘要 + 最近窗口）分配
-- **最近窗口**：按 token（不是条数）取连续后缀，窗口以 `user` 开头、不产生孤立 tool 消息
-- **增量摘要**：盲区攒够阈值才压缩（低频事件），旧摘要 + 新缺口 → 新摘要并持久化到
-  `Conversation.summary`，用水位线（`summaryUpToMessageId`）保证只摘要未覆盖的部分
-- **附件预算**：装得下则原文全量，装不下则保留头 + 尾并显式标注省略（不做静默截断）
-- **超窗降级**：发送前逐条丢历史 → 截断用户消息；provider 仍报超窗时用降级上下文重试**一次**
-- **可观测**：每次构建输出一行 `[Context] {…}` 结构化指标（估算输入、各层占用、是否压缩等）
-- **不编造价格**：成本单价只从环境变量读，未配置时不做货币估算
-
-> 设计与实测数据见 [`server/services/chat/context/README.md`](server/services/chat/context/README.md)。
-> Before/After 基准报告由 `pnpm context:bench` 生成到 `docs/context-benchmark.{md,json}`
-> （**`docs/` 在 .gitignore 内，报告是生成物、不入库**），`-- --live` 追加真实 API 测量。
 
 ### 工具调用（Function Calling）
 
-| 工具               | 触发方式                 | 说明                                   |
-| ------------------ | ------------------------ | -------------------------------------- |
-| `knowledge_search` | 输入框「私有知识库」开关 | 检索私有知识库，可指定单个知识库或全部 |
-| `web_search`       | 输入框「联网搜索」开关   | Tavily 搜索，回答附带来源链接          |
-| `generate_image`   | 始终可用（AI 自行判断）  | SiliconFlow 文生图，带进度条，可取消   |
+| 工具               | 触发方式                 | 说明                   |
+| ------------------ | ------------------------ | ---------------------- |
+| `knowledge_search` | 输入框「私有知识库」开关 | 检索私有知识库         |
+| `web_search`       | 输入框「联网搜索」开关   | Tavily 搜索并附带来源  |
+| `generate_image`   | 始终可用（模型自判断）   | 文生图，带进度条可取消 |
 
-- 多轮循环最多 5 轮（`MAX_TOOL_ROUNDS`），工具可并行执行
-- **每次请求都有工具白名单**：由用户开关算出 `enabledTools`，贯穿每一轮下发，并在执行前二次校验——关闭知识库后，模型即使点名 `knowledge_search` 也会被拒绝执行
-- `/api/chat/cancel-tool` 可按 `toolCallId` 取消正在执行的工具
+- 最多 5 轮工具循环，工具可并行执行
+- 每次请求按用户开关生成工具白名单，执行前二次校验（关闭后模型点名也不会执行）
 
 ### 私有知识库（RAG）
 
-- 入口：聊天输入框内的「私有知识库」开关 + 旁边的知识库选择器（弹窗内可新建 / 删除知识库、上传 / 删除文档）
-- 支持格式：**仅 `.txt` / `.md`，单文件 ≤ 1MB**（PDF/DOCX 未实现，无对应解析依赖）
-- 入库链路（**异步任务队列**）：接口解析后立刻返回 `202 + status=pending`，后台 worker 执行 切分（目标 800 字符 / 重叠 100 字符）→ Embedding（`BAAI/bge-m3`，1024 维，带缓存）→ 落库 → 建词法索引；前端轮询 `GET /api/knowledge/{id}/documents` 看 `status` / `processedChunks`
-- 检索链路（**混合检索 + 精排**）：向量召回（pgvector KNN，相似度下推 SQL、走 HNSW） + BM25 词法召回（CJK 二元组，走 GIN） → RRF 融合 → cross-encoder 精排（`BAAI/bge-reranker-v2-m3`，失败自动降级为融合顺序）→ **绝对下限 + 相对阈值**（`threshold = max(RAG_RERANK_MIN_SCORE, ratio × topScore)`）→ Top-5（数量上限；先过滤再截断，不够 5 条就少返回，甚至返回 0 条）
-  - **绝对下限不是概率，也未经数据标定**：`RAG_RERANK_MIN_SCORE` 默认 `0.05` 只挡近似 0 分的噪声。要让它承担"最低相关性 / 整批不相关就返回 0 条"，必须用真实 query + chunk 标注数据标定后显式配置（方法与诚实说明见 [`server/services/rag/README.md` §1.4](server/services/rag/README.md)）
-  - 可观测：`sources[]` 带 `vectorScore` / `lexicalScore` / `rerankScore`，`debug.threshold` 带 `absoluteFloor` / `relativeThreshold` / `finalThreshold` / `decidedBy` / `rejected`（哪道闸门挡掉了几条）
-  - **检索状态**：`retrieve()` 返回 `status`（`matched` / `no_match` / `empty_knowledge_base` / `no_access` / `invalid_query` / `error`），tool result、前端与埋点都能拿到。`no_match`（检索正常但没有可信证据）与 `error`（检索失败）是两件事：前者如实说"知识库中没有相关资料"，后者说"检索暂时不可用"，两者都不允许模型用自己的知识补答
-- 向量存储：`DocumentChunk.embedding`（`double precision[]`，Prisma 可直接读写）+ `DocumentChunk.embeddingVec`（`vector(1024)`，HNSW 索引，读写走 `$queryRaw`）。**没有 pgvector 时自动回退**到分页精确扫描（keyset 分页全量扫描 + 有界 top-K，不再有 2000 条候选上限）
-- 去重与缓存：同知识库内内容哈希（sha256）相同的文件不会重复入库；chunk 级内容哈希命中 `EmbeddingCache` 时不再调用 embedding API
-- 权限：所有查询以服务端登录态（`getCurrentUserId`）收敛，客户端提交的 `userId` 一律不被信任；指定他人知识库只会得到「不存在或没有访问权限」
-- 无结果时不伪造来源：明确返回"未检索到相关内容"，并要求模型如实告知；同时区分「库里没有文档」与「有文档但没匹配上/旧模型片段未参与检索」
-  - 具体到状态：`empty_knowledge_base`（库里没东西）/ `no_match`（有东西但没有可信证据）/ `no_access`（无权限）/ `error`（检索失败）分别对应不同的用户话术，前端也据此展示，不再把一次故障说成"知识库里没有"
-- 换 embedding 模型：chunk 上记录了 `embeddingModel` / `embeddingDim`，可灰度重建（`pnpm rag:rebuild`），重建期间新旧模型的片段各自与同模型的查询向量比对，检索不中断
+- 支持 `.txt` / `.md`，单文件 ≤ 1MB；上传后异步入库（切分 → Embedding → 落库 → 建索引）
+- 混合检索：pgvector 向量召回 + BM25 词法召回 → RRF 融合 → cross-encoder 精排 → 绝对下限 + 相对阈值过滤 → Top-5
+- 无 pgvector 时自动回退到应用层精确扫描
+- 内容哈希去重、Embedding 缓存、按登录态收敛权限
+- 检索状态区分 `matched` / `no_match` / `empty_knowledge_base` / `no_access` / `error`，无证据时不编造来源
 
-> 架构细节、阈值取舍、环境变量与运维命令见 [`server/services/rag/README.md`](server/services/rag/README.md)。
+### 上下文管理
 
-### 语音
+- 按 token 预算分层构建（system / 当前消息 / 工具轮次 / 附件 / 历史）
+- 按 token 保留最近窗口，历史盲区增量摘要并持久化
+- 附件装不下时保留头尾并显式标注省略
+- 超窗自动降级重试一次，逐请求输出 `[Context]` 结构化指标日志
 
-- 语音输入：录音转文字（SenseVoice）
-- 语音输出：文字转语音（CosyVoice2，8 种音色）
-- 音色选择持久化
+### 语音与文件
 
-### 文件（对话附件）
-
-- 上传 `.txt` / `.md`（最大 1MB），后端读取内容后拼进当前对话上下文
-- 与知识库上传是两条独立链路：附件不进知识库、不做向量化
+- 语音输入 SenseVoice，语音输出 CosyVoice2（8 种音色，可持久化选择）
+- 对话附件：上传 `.txt` / `.md`（≤ 1MB），内容拼进当前上下文（不进知识库）
 
 ### 其他
 
 - 深色模式、Markdown 导出、响应式布局
-- Future-monitor-sdk：错误 / 性能 / 网络 / SSE 链路追踪 + Token 成本统计 + 离线队列上报；开发环境带调试面板（`future-monitor-sdk/debug`）
-- 地区校验（GeoChecker）
+- 监控 SDK：错误 / 性能 / 网络 / SSE 链路追踪、Token 成本统计、离线队列上报
 
-## 环境要求
+## 使用方法
+
+### 环境要求
 
 - Node.js ≥ 22.20.0
-- pnpm ≥ 11.7.0（仓库固定 `packageManager: pnpm@11.7.0`）
-- PostgreSQL 16（可用仓库自带 `docker-compose.yml`）
+- pnpm ≥ 11.7.0
+- PostgreSQL 16（可用仓库内 `docker-compose.yml` 一键启动）
 
-## 快速开始
+### 本地运行
 
 ```bash
 pnpm install
-
-# 生成 Prisma Client（改了 schema 之后必须执行）
-pnpm db:generate
-
-# 建表：本地开发用 migrate，快速同步用 db:push
-pnpm db:migrate
-
-# 可选：创建测试账号 admin / admin
-pnpm db:seed
-
-pnpm dev          # 开发模式 → http://localhost:3000
+pnpm db:generate        # 生成 Prisma Client（改了 schema 后必须执行）
+pnpm db:migrate         # 建表（快速同步可用 pnpm db:push）
+pnpm db:seed            # 可选：创建测试账号 admin / admin
+pnpm dev                # http://localhost:3000
 ```
 
-生产构建与运行：
+生产运行：
 
 ```bash
 pnpm build
-pnpm start        # 注意：项目配置了 output: 'standalone'，
-                  # 容器里的正式入口是 node .next/standalone/server.js
+pnpm start
 ```
 
-Docker 一键起（应用 + 数据库）：
+### 环境变量
 
-```bash
-pnpm docker:up                # 等价于 docker compose up -d
-docker compose up -d --build  # 改了源码后必须带 --build，否则会复用旧镜像
-pnpm docker:logs              # 跟踪 postgres 日志
-pnpm docker:down
-```
+仓库不提交 `.env`（在 `.gitignore` 内），请在根目录自建 `.env`。必填：
 
-> ⚠️ Docker 相关注意点（真实行为，非理想状态）：
->
-> - 应用容器跑的是**构建镜像时的源码**。`docker compose up -d`（不带 `--build`）不会重新构建，容易出现"改了代码但线上没变"。
-> - postgres 镜像已从 `postgres:16-alpine` 换成 **`pgvector/pgvector:pg16`**（RAG 需要 `vector` 类型 + HNSW 索引）。镜像基于同一 PostgreSQL 16 大版本，数据卷可直接沿用；`CREATE EXTENSION vector` 由 RAG 迁移里的 `DO` 块自动完成。
-> - 镜像里**不会自动执行 `prisma migrate deploy`**：数据卷为空时表不会被创建，需要手工 `docker compose exec app npx prisma migrate deploy`（或先在宿主迁移好再用同一数据卷）。
-> - **compose 项目名已从 `sky-chat` 改成 `future-chat`**（与仓库名一致）。项目名决定数据卷名（`${项目名}_postgres_data`）与镜像名（`${项目名}-<service>`），所以改名不是改一行字那么简单：
->   - 当前数据卷是 `future-chat_postgres_data`，由旧卷 `sky-chat_postgres_data` **逐文件复制**而来（迁移步骤见下）。
->   - 旧卷 `sky-chat_postgres_data` **仍然保留着**作为迁移前的备份。确认新卷数据无误并稳定运行一段时间后，可用 `docker volume rm sky-chat_postgres_data` 回收。
->   - 镜像现在是 `future-chat-app`（旧的 `sky-chat-app` 可以删掉）。
-> - bind mount（`generated` 挂载点）与 `com.docker.compose.project.working_dir` 都跟随当前工作目录，**在仓库根目录执行 `docker compose up -d` 即可**。
-> - 旧目录若已被删除，该挂载点会变成**死挂载**：容器里 `/app/public/generated` 根本不存在，AI 生成图片会**静默失败**（不报错，只是图没了）。核验与修复：
->   ```bash
->   # 看挂载点指向哪里（Source 应为 F:\desk\ChatAI\Future-Chat\generated）
->   docker inspect future-chat-app --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
->   # 在仓库根目录重新 up，重建容器即修正挂载
->   docker compose up -d
->   ```
->
-> 再遇到需要改项目名（或迁移到新机器）时，正确顺序永远是**先迁数据卷、再改 YAML**：
->
-> ```bash
-> docker compose -p <旧项目名> down                 # 停服务，保留数据卷（注意不要加 -v）
-> docker volume create <新项目名>_postgres_data
-> docker run --rm -v <旧项目名>_postgres_data:/from \
->                -v <新项目名>_postgres_data:/to alpine cp -av /from/. /to/
-> # ↑ 确认复制完成后再改 docker-compose.yml 的 name:，然后
-> docker compose up -d
-> # 验证数据（用户/会话/知识库条数）无误后，再考虑删旧卷
-> ```
+| 变量                  | 用途                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| `DATABASE_URL`        | Prisma 连接串，本地默认 `postgresql://future_chat:password123@localhost:5433/future_chat` |
+| `SILICONFLOW_API_KEY` | 对话 / Embedding / Rerank / 图片 / TTS / ASR                                              |
+| `JWT_SECRET`          | 自研 `auth-token` 签名（生产环境至少 32 字符）                                            |
+| `AUTH_SECRET`         | middleware 校验 NextAuth 会话                                                             |
 
-## 环境变量
+可选：`TAVILY_API_KEY`（联网搜索）、`GOOGLE_CLIENT_*` / `GITHUB_CLIENT_*`（OAuth 登录）、`NEXT_PUBLIC_APP_URL`（分享链接）、
+`RAG_*`（检索参数）、`CONTEXT_*`（上下文预算）、`LLM_INPUT_PRICE_PER_1M_TOKENS` / `LLM_OUTPUT_PRICE_PER_1M_TOKENS`（成本估算）。
 
-仓库只提供 `.env`（`docker compose` 通过 `env_file` 读取；`.dockerignore` 已把 `.env*` 排除在镜像之外）。
-
-| 变量                                                                                                 | 必需 | 用途                                                                                                                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                                                                       | ✅   | Prisma 连接串。本地默认 `postgresql://future_chat:password123@localhost:5433/future_chat`                                                                                                                                                               |
-| `SILICONFLOW_API_KEY`                                                                                | ✅   | 对话 / Embedding / 图片 / TTS / ASR；`generate_image` 与 embedding 依赖它                                                                                                                                                                               |
-| `JWT_SECRET`                                                                                         | ✅   | 自研 `auth-token` JWT 签名（生产环境至少 32 字符，否则启动即报错）                                                                                                                                                                                      |
-| `AUTH_SECRET`                                                                                        | ✅   | middleware 用 next-auth `getToken` 校验会话                                                                                                                                                                                                             |
-| `AUTH_TRUST_HOST`                                                                                    | 建议 | NextAuth 反向代理场景                                                                                                                                                                                                                                   |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`                                                          | 可选 | Google 登录                                                                                                                                                                                                                                             |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`                                                          | 可选 | GitHub 登录                                                                                                                                                                                                                                             |
-| `TAVILY_API_KEY`                                                                                     | 可选 | `web_search` 工具；未配置则该工具不注册                                                                                                                                                                                                                 |
-| `NEXT_PUBLIC_APP_URL`                                                                                | 可选 | 分享链接拼接，默认 `http://localhost:3000`                                                                                                                                                                                                              |
-| `RAG_MIN_SCORE`                                                                                      | 可选 | **已废弃**：旧的绝对余弦阈值。设置后会被当作 `RAG_VECTOR_MIN_SCORE` 处理（见 `server/services/rag/README.md`）                                                                                                                                          |
-| `EMBEDDING_MODEL`                                                                                    | 可选 | 覆盖 Embedding 模型，必须在 `shared/constants/models.ts` 白名单内                                                                                                                                                                                       |
-| `RAG_RERANK`                                                                                         | 可选 | 精排开关，默认开（`0`/`false`/`off` 关闭）；关闭后退化为 RRF 融合顺序                                                                                                                                                                                   |
-| `RAG_RERANK_MODEL`                                                                                   | 可选 | 精排模型，默认 `BAAI/bge-reranker-v2-m3`（白名单 `RERANK_MODELS`）                                                                                                                                                                                      |
-| `RAG_RERANK_TOP_N` / `RAG_RERANK_MIN_RATIO` / `RAG_RERANK_MIN_SCORE`                                 | 可选 | 精排条数上限 / 相对阈值比例（默认 0.25）/ 精排分**绝对下限**（默认 0.05，**未标定**，只挡近似 0 分的噪声；承担"最低相关性"前必须用标注数据标定，见 RAG README §1.4）                                                                                    |
-| `RAG_RERANK_MAX_GAP_RATIO`                                                                           | 可选 | 可选的分数断崖截断（默认 0=关闭）：相邻落差严格大于该比例时截断；**启发式、非标定值**                                                                                                                                                                   |
-| `RAG_FUSE_TOP` / `RAG_FUSION_TOP_N` / `RAG_FUSION_MIN_RATIO`                                         | 可选 | 进入精排的融合候选数（默认 30）/ 无精排时的名次截断（默认 `max(topK×3,15)`）/ 额外比例阈值（默认 0=不用）                                                                                                                                               |
-| `RAG_VECTOR_MIN_SCORE`                                                                               | 可选 | 仅"精排不可用"时的余弦兜底下限（默认 0.35），精排生效时不参与判断                                                                                                                                                                                       |
-| `RAG_HNSW_EF_SEARCH` / `RAG_HNSW_ITERATIVE_SCAN`                                                     | 可选 | HNSW 召回旋钮（默认 100 / `relaxed_order`，pgvector ≥ 0.8）                                                                                                                                                                                             |
-| `RAG_VECTOR_BACKEND`                                                                                 | 可选 | `auto`（默认）/ `pgvector` / `app`，可强制走应用层回退路径做对照                                                                                                                                                                                        |
-| `RAG_EXACT_SCAN_MAX_CHUNKS`                                                                          | 可选 | 回退路径的扫描上限；**默认不设上限**（全量扫描），设置后会在日志里标记截断                                                                                                                                                                              |
-| `RAG_GRAY_LEGACY_QUERY` / `RAG_GRAY_MAX_LEGACY_MODELS`                                               | 可选 | 灰度重建期间是否为新旧模型各查一次（默认开 / 最多 1 个旧模型）                                                                                                                                                                                          |
-| `RAG_WORKER_ENABLED` / `RAG_WORKER_POLL_MS` / `RAG_WORKER_LOCK_TIMEOUT_MS` / `RAG_WORKER_ONCE`       | 可选 | 任务 worker 开关 / 轮询间隔（2000ms）/ 锁超时（120s）/ 跑空即退出                                                                                                                                                                                       |
-| `RAG_BM25_K1` / `RAG_BM25_B`                                                                         | 可选 | BM25 参数，默认 1.2 / 0.75                                                                                                                                                                                                                              |
-| `TRUST_PROXY`                                                                                        | 可选 | 可信代理配置；未设置时**不启用**基于 IP 的登录限流，审计日志也不记录 IP                                                                                                                                                                                 |
-| `CONTEXT_WINDOW_OVERRIDE`                                                                            | 可选 | 覆盖模型上下文窗口。未设置时用 `shared/constants/models.ts` 里各模型自己的值：DeepSeek-V3.2 取 **163840**（依据 provider 返回的 `max_prompt_tokens (163840) limit`），Qwen2.5-72B-Instruct 取 **32768**（`-128K` 是独立模型 id）。换模型/供应商后请复核 |
-| `CONTEXT_COMPACT_THRESHOLD_RATIO`                                                                    | 可选 | 压缩触发阈值（默认 `0.1`，由 benchmark 扫描定出，见 `context/README.md`）                                                                                                                                                                               |
-| `CONTEXT_SUMMARY_MAX_TOKENS` / `CONTEXT_SUMMARY_CHUNK_MAX_TOKENS` / `CONTEXT_SUMMARY_TIMEOUT_MS`     | 可选 | 摘要硬上限（800）/ 单次摘要调用输入上限（4000）/ 一次压缩总超时（15000ms）                                                                                                                                                                              |
-| `CONTEXT_ATTACHMENT_SHARE_RATIO` / `CONTEXT_ATTACHMENT_MAX_TOKENS` / `CONTEXT_ATTACHMENT_MIN_TOKENS` | 可选 | 附件预算比例（0.5）/ 附件总量上限（12000）/ 单附件保底（120）                                                                                                                                                                                           |
-| `CONTEXT_SAFETY_MARGIN_RATIO` / `CONTEXT_MIN_RECENT_USER_TURNS`                                      | 可选 | 估算安全边际（0.1）/ 至少保留的用户轮次（1）                                                                                                                                                                                                            |
-| `CONTEXT_METRICS_LOG`                                                                                | 可选 | 设为 `off` 关闭逐请求的 `[Context]` 指标日志                                                                                                                                                                                                            |
-| `LLM_INPUT_PRICE_PER_1M_TOKENS` / `LLM_OUTPUT_PRICE_PER_1M_TOKENS`                                   | 可选 | token 单价；**未配置则不做成本估算**（不编造价格）                                                                                                                                                                                                      |
-| `IMAGE_STORAGE_DIR` / `IMAGE_URL_PREFIX`                                                             | 可选 | 生成图片的落盘目录与 URL 前缀                                                                                                                                                                                                                           |
-| `GEO_TEST_MODE`                                                                                      | 可选 | 设为 `block` 可模拟地区拦截                                                                                                                                                                                                                             |
-| `NEXT_PUBLIC_MONITOR_SAMPLE_RATE`                                                                    | 可选 | 监控采样率，默认 1                                                                                                                                                                                                                                      |
-| `ANALYZE`                                                                                            | 可选 | 设为 `true` 生成 bundle 分析报告                                                                                                                                                                                                                        |
-| `OPENAI_API_KEY`                                                                                     | 可选 | 仅作 SiliconFlow Key 缺失时的兜底                                                                                                                                                                                                                       |
-
-> 历史文档里出现过 `AUTH_GOOGLE_ID` / `AUTH_GITHUB_ID` / `.env.local`，**这些在当前代码中都不生效**：代码读取的是 `GOOGLE_CLIENT_ID` / `GITHUB_CLIENT_ID`，环境文件是 `.env`。
->
-> 已知隐患：NextAuth v4 在 `server/auth/auth.ts` 中**没有显式配置 `secret`**（`.env` 里的 `AUTH_SECRET` 只被 middleware 使用），生产环境（`NODE_ENV=production`）可能因此启动失败，建议补上 `secret: process.env.AUTH_SECRET`。
-
-## 脚本
+### 常用脚本
 
 ```bash
 pnpm dev / build / start     # 开发 / 构建 / 启动
-pnpm lint                    # ESLint（next/core-web-vitals + typescript）
-pnpm format / format:check   # Prettier
-pnpm test                    # Vitest（服务端纯逻辑 + SDK 单测）
+pnpm lint / format / test    # ESLint / Prettier / Vitest
 
-pnpm context:bench           # Before/After 基准 → docs/context-benchmark.{md,json}（生成物，docs/ 不入库）
-pnpm context:bench -- --live # 追加真实 API 测量（TTFT/TTLB + 估算器校准）
-
-pnpm db:generate             # prisma generate
-pnpm db:migrate              # prisma migrate dev
-pnpm db:push                 # prisma db push
-pnpm db:seed                 # 填充 admin/admin 测试账号
 pnpm db:studio               # Prisma Studio
+pnpm rag:status              # 向量库、索引、队列、缓存状态
+pnpm rag:backfill            # 存量数据补齐索引（迁移后执行一次）
+pnpm rag:rebuild             # 换 Embedding 模型后的灰度重建
+pnpm rag:worker              # 独立入库 worker（多实例部署时拆分消费）
+pnpm context:bench           # 上下文管理 Before/After 基准
 
-pnpm rag:status              # pgvector/索引/队列/缓存/模型分布 一览
-pnpm rag:backfill            # 存量数据补齐 tsv / 模型标记 / embeddingVec（迁移后必须跑一次）
-pnpm rag:indexes             # 补回 HNSW / GIN 索引（migrate dev 可能把 HNSW 索引 diff 掉）
-pnpm rag:rebuild -- --user=admin --max-chunks=200   # 换 embedding 模型后的灰度重建
-pnpm rag:reindex-lexical     # 只重建词法索引（换分词策略后用）
-pnpm rag:worker              # 独立 worker 进程（多实例部署时把队列消费拆出来）
-
-pnpm docker:up / down / logs / restart
-pnpm clean:logs              # 预览待清理的 console.log
-pnpm clean:logs --write      # 实际删除
+pnpm docker:up / docker:down / docker:logs   # 应用 + 数据库
 ```
 
-> 历史文档中的 `pnpm db:reset` **不存在**；`pnpm test` 覆盖 `server/**/__tests__`（RAG chunker / tokenizer / RRF 融合 / 精排 / 检索编排）与 `packages/future-monitor-sdk/tests`，`features/**/__tests__` 尚未纳入。
-> RAG 的数据库集成测试默认跳过，需要真实库时用 `RAG_DB_TEST=1 pnpm test`（会在库里建临时知识库并在结束时删除）——BM25 打分、pgvector 召回、2000 上限回归与队列语义都在这里验证。
-
-## 项目结构
-
-```
-app/                          # Next.js App Router
-├── api/chat/                 # 对话 SSE 入口（工具调用）、cancel-tool
-├── api/knowledge/            # 知识库 / 文档 CRUD（含上传入库）
-├── api/messages/ message/    # 消息增删改
-├── api/auth/                 # 登录 / 注册 / OAuth 关联
-├── api/upload/ speech/ tts/  # 附件解析 / 语音
-├── api/monitor/ health/ geo/ # 监控上报 / 健康检查 / 地区
-├── chat/[conversationId]/    # 会话页
-└── share/[token]/            # 分享页
-
-components/                   # 全局组件
-├── ui/                       # shadcn/ui 基础组件
-├── icons/FutureChatLogo.tsx  # 品牌 Logo
-└── Sidebar / Header / LandingPage / MainLayout / Providers ...
-
-features/                     # 按功能垂直切分
-├── auth/                     # 认证（含 AuthGuard / LoginDialog）
-├── chat/                     # 对话（store / services / utils / components）
-├── conversation/             # 会话列表
-├── knowledge/                # 知识库（services/knowledge-api.ts + 管理弹窗）
-├── share/                    # 分享
-└── voice/                    # 语音
-
-lib/                          # 前端工具库（仅客户端）
-├── hooks/ utils/ stores/
-└── monitor/                  # 监控装配层（消费 future-monitor-sdk）
-
-shared/                       # 中立共享层（前端与 server 均可引用）
-├── constants/models.ts       # 对话模型 + Embedding 模型白名单（含 contextWindow / 输出预留）
-└── utils/sse.ts              # SSE 解析
-
-server/                       # 服务端
-├── auth/  db/  middleware/  utils/
-├── repositories/             # conversation / message / user / knowledge / audit-log
-└── services/
-    ├── chat/                 # chat.service / stream.handler / sse-writer / prompt.builder
-    │   └── context/          # 上下文管理（预算 / 窗口 / 压缩 / 附件 / 指标）见其 README
-    ├── tools/                # ToolRegistry + web_search / generate_image / knowledge_search
-    ├── rag/                  # parse / chunker / index（ingestDocument、retrieve）
-    ├── ai/                   # SiliconFlow 对话与 Embedding 调用
-    ├── image/  geo/  export/  conversation/
-
-prisma/                       # schema.prisma + migrations
-packages/future-monitor-sdk/  # 监控 SDK（工作区包，包名 future-monitor-sdk）
-scripts/                      # 运维与基准脚本（含 context-benchmark.ts）
-docs/                         # 本地生成物（基准报告等）。注意 /docs 在 .gitignore 内，不入库
-test-rag/                     # RAG 测试知识库 + 验收/回归脚本
-```
-
-## 分层规则
-
-依赖方向（禁止反向依赖）：
-
-- `features/ → lib/`、`features/ → shared/`
-- `server/ → shared/`（仅限纯配置与纯函数）
-- `app/api/ → server/ → shared/`
-- 禁止 `server/` 依赖 `lib/` 与 `features/`
-- 禁止 `features/` 依赖 `server/`
-
-## RAG 自测工具（test-rag/）
+### Docker
 
 ```bash
-node test-rag/run-tests.mjs      # 导入 3 个测试文档并跑 8 个 RAG 用例（23 项断言）
-node test-rag/regression.mjs     # 全面回归（含工具开关、权限隔离、默认模型）
-node test-rag/upload-contract.mjs # 上传契约：异步入库状态机、响应字段、内容哈希去重
-node test-rag/guard-check.mjs    # 定向验证「关闭知识库后工具被拒绝执行」
-node --experimental-strip-types test-rag/merge-check.mjs   # 知识库来源合并逻辑单测
-
-# 服务不在 3000 端口时（例如本地 dev 起在 3001）：
-FC_BASE_URL=http://127.0.0.1:3001 node test-rag/run-tests.mjs --force
+pnpm docker:up                  # 启动应用与 pgvector/pgvector:pg16
+docker compose up -d --build    # 改了源码后必须带 --build
+docker compose exec app npx prisma migrate deploy   # 首次启动建表
 ```
-
-> 入库已改为异步：脚本上传后会轮询文档状态直到 `ready`（上限 `FC_WAIT_INGEST_MS`，默认 180 秒），
-> 因此"上传返回 202"不再等于"可检索"，请以轮询结果为准。
 
 ## License
 
